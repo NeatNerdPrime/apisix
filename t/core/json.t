@@ -132,10 +132,32 @@ qr/\{"b":\{"a":\{"b":"table: 0x[\w]+"\}\}\}/
             local core = require("apisix.core")
             local data = core.json.decode('{"arr":[]}')
             ngx.say(core.json.encode(data))
+            local data = { arr = setmetatable({}, core.json.array_mt)}
+            ngx.say(core.json.encode(data))
             local data = core.json.decode('{"obj":{}}')
             ngx.say(core.json.encode(data))
         }
     }
 --- response_body
 {"arr":[]}
+{"arr":[]}
 {"obj":{}}
+
+
+
+=== TEST 7: encode slash without escape
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+            local json_data = core.json.encode({test="/test"})
+
+            ngx.say("encode: ", json_data)
+
+            local data = core.json.decode(json_data)
+            ngx.say("data: ", data.test)
+        }
+    }
+--- response_body
+encode: {"test":"/test"}
+data: /test

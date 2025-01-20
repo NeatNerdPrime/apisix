@@ -14,18 +14,21 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 --
-local limit_local_new = require("resty.limit.count").new
 local core = require("apisix.core")
 local apisix_plugin = require("apisix.plugin")
 local tab_insert = table.insert
 local ipairs = ipairs
 local pairs = pairs
+local redis_schema = require("apisix.utils.redis-schema")
+local policy_to_additional_properties = redis_schema.schema
 
-
-local plugin_name = "limit-count"
 local limit_redis_cluster_new
 local limit_redis_new
+local limit_local_new
 do
+    local local_src = "apisix.plugins.limit-count.limit-count-local"
+    limit_local_new = require(local_src).new
+
     local redis_src = "apisix.plugins.limit-count.limit-count-redis"
     limit_redis_new = require(redis_src).new
 
@@ -39,50 +42,30 @@ local group_conf_lru = core.lrucache.new({
     type = 'plugin',
 })
 
+local metadata_defaults = {
+    limit_header = "X-RateLimit-Limit",
+    remaining_header = "X-RateLimit-Remaining",
+    reset_header = "X-RateLimit-Reset",
+}
 
-local policy_to_additional_properties = {
-    redis = {
-        properties = {
-            redis_host = {
-                type = "string", minLength = 2
-            },
-            redis_port = {
-                type = "integer", minimum = 1, default = 6379,
-            },
-            redis_password = {
-                type = "string", minLength = 0,
-            },
-            redis_database = {
-                type = "integer", minimum = 0, default = 0,
-            },
-            redis_timeout = {
-                type = "integer", minimum = 1, default = 1000,
-            },
+local metadata_schema = {
+    type = "object",
+    properties = {
+        limit_header = {
+            type = "string",
+            default = metadata_defaults.limit_header,
         },
-        required = {"redis_host"},
-    },
-    ["redis-cluster"] = {
-        properties = {
-            redis_cluster_nodes = {
-                type = "array",
-                minItems = 2,
-                items = {
-                    type = "string", minLength = 2, maxLength = 100
-                },
-            },
-            redis_password = {
-                type = "string", minLength = 0,
-            },
-            redis_timeout = {
-                type = "integer", minimum = 1, default = 1000,
-            },
-            redis_cluster_name = {
-                type = "string",
-            },
+        remaining_header = {
+            type = "string",
+            default = metadata_defaults.remaining_header,
         },
-        required = {"redis_cluster_nodes", "redis_cluster_name"},
+        reset_header = {
+            type = "string",
+            default = metadata_defaults.reset_header,
+        },
     },
 }
+
 local schema = {
     type = "object",
     properties = {
@@ -132,7 +115,8 @@ local schema = {
 local schema_copy = core.table.deepcopy(schema)
 
 local _M = {
-    schema = schema
+    schema = schema,
+    metadata_schema = metadata_schema,
 }
 
 
@@ -141,7 +125,12 @@ local function group_conf(conf)
 end
 
 
-function _M.check_schema(conf)
+
+function _M.check_schema(conf, schema_type)
+    if schema_type == core.schema.TYPE_METADATA then
+        return core.schema.check(metadata_schema, conf)
+    end
+
     local ok, err = core.schema.check(schema, conf)
     if not ok then
         return false, err
@@ -184,8 +173,8 @@ function _M.check_schema(conf)
 end
 
 
-local function create_limit_obj(conf)
-    core.log.info("create new limit-count plugin instance")
+local function create_limit_obj(conf, plugin_name)
+    core.log.info("create new " .. plugin_name .. " plugin instance")
 
     if not conf.policy or conf.policy == "local" then
         return limit_local_new("plugin-" .. plugin_name, conf.count,
@@ -215,7 +204,9 @@ local function gen_limit_key(conf, ctx, key)
     -- Here we use plugin-level conf version to prevent the counter from being resetting
     -- because of the change elsewhere.
     -- A route which reuses a previous route's ID will inherits its counter.
-    local new_key = ctx.conf_type .. ctx.conf_id .. ':' .. apisix_plugin.conf_version(conf)
+    local conf_type = ctx.conf_type_without_consumer or ctx.conf_type
+    local conf_id = ctx.conf_id_without_consumer or ctx.conf_id
+    local new_key = conf_type .. conf_id .. ':' .. apisix_plugin.conf_version(conf)
                     .. ':' .. key
     if conf._vid then
         -- conf has _vid means it's from workflow plugin, add _vid to the key
@@ -227,9 +218,9 @@ local function gen_limit_key(conf, ctx, key)
 end
 
 
-local function gen_limit_obj(conf, ctx)
+local function gen_limit_obj(conf, ctx, plugin_name)
     if conf.group then
-        return lrucache(conf.group, "", create_limit_obj, conf)
+        return lrucache(conf.group, "", create_limit_obj, conf, plugin_name)
     end
 
     local extra_key
@@ -239,14 +230,13 @@ local function gen_limit_obj(conf, ctx)
         extra_key = conf.policy
     end
 
-    return core.lrucache.plugin_ctx(lrucache, ctx, extra_key, create_limit_obj, conf)
+    return core.lrucache.plugin_ctx(lrucache, ctx, extra_key, create_limit_obj, conf, plugin_name)
 end
 
-
-function _M.rate_limit(conf, ctx)
+function _M.rate_limit(conf, ctx, name, cost)
     core.log.info("ver: ", ctx.conf_version)
 
-    local lim, err = gen_limit_obj(conf, ctx)
+    local lim, err = gen_limit_obj(conf, ctx, name)
 
     if not lim then
         core.log.error("failed to fetch limit.count object: ", err)
@@ -283,10 +273,31 @@ function _M.rate_limit(conf, ctx)
     key = gen_limit_key(conf, ctx, key)
     core.log.info("limit key: ", key)
 
-    local delay, remaining = lim:incoming(key, true)
+    local delay, remaining, reset
+    if not conf.policy or conf.policy == "local" then
+        delay, remaining, reset = lim:incoming(key, true, conf, cost)
+    else
+        delay, remaining, reset = lim:incoming(key, cost)
+    end
+
+    local metadata = apisix_plugin.plugin_metadata("limit-count")
+    if metadata then
+        metadata = metadata.value
+    else
+        metadata = metadata_defaults
+    end
+    core.log.info("limit-count plugin-metadata: ", core.json.delay_encode(metadata))
+
     if not delay then
         local err = remaining
         if err == "rejected" then
+            -- show count limit header when rejected
+            if conf.show_limit_quota_header then
+                core.response.set_header(metadata.limit_header, conf.count,
+                    metadata.remaining_header, 0,
+                    metadata.reset_header, reset)
+            end
+
             if conf.rejected_msg then
                 return conf.rejected_code, { error_msg = conf.rejected_msg }
             end
@@ -301,8 +312,9 @@ function _M.rate_limit(conf, ctx)
     end
 
     if conf.show_limit_quota_header then
-        core.response.set_header("X-RateLimit-Limit", conf.count,
-            "X-RateLimit-Remaining", remaining)
+        core.response.set_header(metadata.limit_header, conf.count,
+            metadata.remaining_header, remaining,
+            metadata.reset_header, reset)
     end
 end
 

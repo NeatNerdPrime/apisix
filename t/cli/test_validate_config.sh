@@ -82,6 +82,7 @@ deployment:
 apisix:
     node_listen: 9080
     enable_admin: true
+    proxy_mode: http&stream
     stream_proxy:
         tcp:
             - "localhost:9100"
@@ -97,26 +98,6 @@ fi
 make stop
 
 echo "passed: allow configuring address in stream_proxy"
-
-sed -i 's/^  \(node_listen:\)/  #\1/g' conf/config-default.yaml
-sed -i 's/^    \(- 9080\)/    #\1/g' conf/config-default.yaml
-sed -i 's/^  # \(node_listen: 9080\)/  \1/g' conf/config-default.yaml
-
-echo '
-apisix:
-    node_listen:
-      - 9080
-      - 9081
-' > conf/config.yaml
-
-out=$(make init 2>&1 || true)
-if ! echo "$out"; then
-    echo "failed: allow configuring node_listen as a number in the default config"
-    exit 1
-fi
-git checkout conf/config-default.yaml
-
-echo "passed: allow configuring node_listen as a number in the default config"
 
 # apisix test
 git checkout conf/config.yaml
@@ -141,7 +122,7 @@ nginx_config:
 
 # apisix restart
 out=$(./bin/apisix restart 2>&1 || true)
-if ! (echo "$out" | grep "\[emerg\] unknown directive \"notexist\"") && ! (echo "$out" | grep "APISIX is running"); then
+if ! (echo "$out" | grep "\[emerg\] unknown directive \"notexist\"") && ! (echo "$out" | grep "the old APISIX is still running"); then
     echo "failed: should restart failed when configuration invalid"
     exit 1
 fi

@@ -23,9 +23,9 @@ local log          = require("apisix.core.log")
 local ws_server    = require("resty.websocket.server")
 local protoc       = require("protoc")
 local pb           = require("pb")
+local ngx          = ngx
 local setmetatable = setmetatable
 local pcall        = pcall
-local pairs        = pairs
 
 
 local _M = { version = 0.1 }
@@ -42,7 +42,7 @@ local function init_pb_state()
     -- initialize protoc compiler
     protoc.reload()
     local pubsub_protoc = protoc.new()
-    pubsub_protoc:addpath("apisix/include/apisix/model")
+    pubsub_protoc:addpath(ngx.config.prefix() .. "apisix/include/apisix/model")
     local ok, err = pcall(pubsub_protoc.loadfile, pubsub_protoc, "pubsub.proto")
     if not ok then
         pubsub_protoc:reset()
@@ -56,21 +56,20 @@ end
 
 -- parse command name and parameters from client message
 local function get_cmd(data)
-    for key, value in pairs(data) do
-        -- There are sequence and command properties in the data,
-        -- select the handler according to the command value.
-        if key ~= "sequence" and key ~= "req" then
-            -- new version of lua-protobuf will add a new field 'oneof_name = oneof_type'
-            -- so we also need to filter it out (in this case, the 'req' key)
-            return key, value
-        end
-    end
+    -- There are sequence and command properties in the data,
+    -- select the handler according to the command value.
+    local key = data.req
+    return key, data[key]
 end
 
 
 -- send generic response to client
 local function send_resp(ws, sequence, data)
     data.sequence = sequence
+    -- only restore state if it has changed
+    if pb_state ~= pb.state() then
+        pb.state(pb_state)
+    end
     local ok, encoded = pcall(pb.encode, "PubSubResp", data)
     if not ok or not encoded then
         log.error("failed to encode response message, err: ", encoded)
@@ -189,9 +188,10 @@ function _M.wait(self)
             goto continue
         end
 
-        -- recovery of stored pb_store
-        pb.state(pb_state)
-
+        -- only recover state if it has changed
+        if pb.state() ~= pb_state then
+            pb.state(pb_state)
+        end
         local data, err = pb.decode("PubSubReq", raw_data)
         if not data then
             log.error("pubsub server receives undecodable data, err: ", err)

@@ -15,11 +15,10 @@
 -- limitations under the License.
 --
 
-local rediscluster = require("resty.rediscluster")
+local redis_cluster = require("apisix.utils.rediscluster")
 local core = require("apisix.core")
 local setmetatable = setmetatable
 local tostring = tostring
-local ipairs = ipairs
 
 local _M = {}
 
@@ -30,45 +29,18 @@ local mt = {
 
 
 local script = core.string.compress_script([=[
-    if redis.call('ttl', KEYS[1]) < 0 then
-        redis.call('set', KEYS[1], ARGV[1] - 1, 'EX', ARGV[2])
-        return ARGV[1] - 1
+    assert(tonumber(ARGV[3]) >= 1, "cost must be at least 1")
+    local ttl = redis.call('ttl', KEYS[1])
+    if ttl < 0 then
+        redis.call('set', KEYS[1], ARGV[1] - ARGV[3], 'EX', ARGV[2])
+        return {ARGV[1] - ARGV[3], ARGV[2]}
     end
-    return redis.call('incrby', KEYS[1], -1)
+    return {redis.call('incrby', KEYS[1], 0 - ARGV[3]), ttl}
 ]=])
 
 
-local function new_redis_cluster(conf)
-    local config = {
-        -- can set different name for different redis cluster
-        name = conf.redis_cluster_name,
-        serv_list = {},
-        read_timeout = conf.redis_timeout,
-        auth = conf.redis_password,
-        dict_name = "plugin-limit-count-redis-cluster-slot-lock",
-    }
-
-    for i, conf_item in ipairs(conf.redis_cluster_nodes) do
-        local host, port, err = core.utils.parse_addr(conf_item)
-        if err then
-            return nil, "failed to parse address: " .. conf_item
-                        .. " err: " .. err
-        end
-
-        config.serv_list[i] = {ip = host, port = port}
-    end
-
-    local red_cli, err = rediscluster:new(config)
-    if not red_cli then
-        return nil, "failed to new redis cluster: " .. err
-    end
-
-    return red_cli
-end
-
-
 function _M.new(plugin_name, limit, window, conf)
-    local red_cli, err = new_redis_cluster(conf)
+    local red_cli, err = redis_cluster.new(conf, "plugin-limit-count-redis-cluster-slot-lock")
     if not red_cli then
         return nil, err
     end
@@ -85,22 +57,26 @@ function _M.new(plugin_name, limit, window, conf)
 end
 
 
-function _M.incoming(self, key)
+function _M.incoming(self, key, cost)
     local red = self.red_cli
     local limit = self.limit
     local window = self.window
     key = self.plugin_name .. tostring(key)
 
-    local remaining, err = red:eval(script, 1, key, limit, window)
+    local ttl = 0
+    local res, err = red:eval(script, 1, key, limit, window, cost or 1)
 
     if err then
-        return nil, err
+        return nil, err, ttl
     end
 
+    local remaining = res[1]
+    ttl = res[2]
+
     if remaining < 0 then
-        return nil, "rejected"
+        return nil, "rejected", ttl
     end
-    return 0, remaining
+    return 0, remaining, ttl
 end
 
 

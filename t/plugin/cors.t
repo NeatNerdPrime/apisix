@@ -235,7 +235,7 @@ Access-Control-Allow-Origin: *
 Vary:
 Access-Control-Allow-Methods: *
 Access-Control-Allow-Headers: *
-Access-Control-Expose-Headers: *
+Access-Control-Expose-Headers:
 Access-Control-Max-Age: 5
 Access-Control-Allow-Credentials:
 
@@ -454,7 +454,7 @@ ExternalHeader1: val
 ExternalHeader2: val
 ExternalHeader3: val
 --- response_body
-{"message":"Missing API key found in request"}
+{"message":"Missing API key in request"}
 --- error_code: 401
 --- response_headers
 Access-Control-Allow-Origin: https://sub.domain.com
@@ -723,7 +723,7 @@ qr/failed to check the configuration of plugin cors err: you can not/
                             "expose_headers": "ex-headr1,ex-headr2",
                             "max_age": 50,
                             "allow_credential": true,
-                            "allow_origins_by_regex":[".*\\.test.com"]
+                            "allow_origins_by_regex":[".*\\.test.com$"]
                         }
                     },
                     "upstream": {
@@ -802,7 +802,7 @@ Access-Control-Allow-Credentials:
                             "expose_headers": "ex-headr1,ex-headr2",
                             "max_age": 50,
                             "allow_credential": true,
-                            "allow_origins_by_regex":[".*\\.test.com",".*\\.example.org"]
+                            "allow_origins_by_regex":[".*\\.test.com$",".*\\.example.org$"]
                         }
                     },
                     "upstream": {

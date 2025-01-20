@@ -21,6 +21,7 @@ local enable_debug  = require("apisix.debug").enable_debug
 local wasm          = require("apisix.wasm")
 local expr          = require("resty.expr.v1")
 local apisix_ssl    = require("apisix.ssl")
+local re_split      = require("ngx.re").split
 local ngx           = ngx
 local crc32         = ngx.crc32_short
 local ngx_exit      = ngx.exit
@@ -40,6 +41,9 @@ local stream_local_plugins_hash = core.table.new(0, 32)
 
 
 local merged_route = core.lrucache.new({
+    ttl = 300, count = 512
+})
+local merged_stream_route = core.lrucache.new({
     ttl = 300, count = 512
 })
 local expr_lrucache = core.lrucache.new({
@@ -179,6 +183,10 @@ local function load_plugin(name, plugins_list, plugin_type)
 
     if plugin.init then
         plugin.init()
+    end
+
+    if plugin.workflow_handler then
+        plugin.workflow_handler()
     end
 
     return
@@ -327,6 +335,8 @@ function _M.load(config)
         return local_plugins
     end
 
+    local exporter = require("apisix.plugins.prometheus.exporter")
+
     if ngx.config.subsystem == "http" then
         if not http_plugin_names then
             core.log.error("failed to read plugin list from local file")
@@ -339,6 +349,15 @@ function _M.load(config)
             local ok, err = load(http_plugin_names, wasm_plugin_names)
             if not ok then
                 core.log.error("failed to load plugins: ", err)
+            end
+
+            local enabled = core.table.array_find(http_plugin_names, "prometheus") ~= nil
+            local active  = exporter.get_prometheus() ~= nil
+            if not enabled then
+                exporter.destroy()
+            end
+            if enabled and not active then
+                exporter.http_init()
             end
         end
     end
@@ -565,7 +584,7 @@ end
 
 
 local function merge_service_route(service_conf, route_conf)
-    local new_conf = core.table.deepcopy(service_conf)
+    local new_conf = core.table.deepcopy(service_conf, { shallows = {"self.value.upstream.parent"}})
     new_conf.value.service_id = new_conf.value.id
     new_conf.value.id = route_conf.value.id
     new_conf.modifiedIndex = route_conf.modifiedIndex
@@ -636,6 +655,49 @@ function _M.merge_service_route(service_conf, route_conf)
 end
 
 
+local function merge_service_stream_route(service_conf, route_conf)
+    -- because many fields in Service are not supported by stream route,
+    -- so we copy the stream route as base object
+    local new_conf = core.table.deepcopy(route_conf, { shallows = {"self.value.upstream.parent"}})
+    if service_conf.value.plugins then
+        for name, conf in pairs(service_conf.value.plugins) do
+            if not new_conf.value.plugins then
+                new_conf.value.plugins = {}
+            end
+
+            if not new_conf.value.plugins[name] then
+                new_conf.value.plugins[name] = conf
+            end
+        end
+    end
+
+    new_conf.value.service_id = nil
+
+    if not new_conf.value.upstream and service_conf.value.upstream then
+        new_conf.value.upstream = service_conf.value.upstream
+    end
+
+    if not new_conf.value.upstream_id and service_conf.value.upstream_id then
+        new_conf.value.upstream_id = service_conf.value.upstream_id
+    end
+
+    return new_conf
+end
+
+
+function _M.merge_service_stream_route(service_conf, route_conf)
+    core.log.info("service conf: ", core.json.delay_encode(service_conf, true))
+    core.log.info("  stream route conf: ", core.json.delay_encode(route_conf, true))
+
+    local version = route_conf.modifiedIndex .. "#" .. service_conf.modifiedIndex
+    local route_service_key = route_conf.value.id .. "#"
+            .. version
+    return merged_stream_route(route_service_key, version,
+            merge_service_stream_route,
+            service_conf, route_conf)
+end
+
+
 local function merge_consumer_route(route_conf, consumer_conf, consumer_group_conf)
     if not consumer_conf.plugins or
        core.table.nkeys(consumer_conf.plugins) == 0
@@ -644,7 +706,8 @@ local function merge_consumer_route(route_conf, consumer_conf, consumer_group_co
         return route_conf
     end
 
-    local new_route_conf = core.table.deepcopy(route_conf)
+    local new_route_conf = core.table.deepcopy(route_conf,
+                            { shallows = {"self.value.upstream.parent"}})
 
     if consumer_group_conf then
         for name, conf in pairs(consumer_group_conf.value.plugins) do
@@ -690,6 +753,12 @@ function _M.merge_consumer_route(route_conf, consumer_conf, consumer_group_conf,
 
     local new_conf = merged_route(flag, api_ctx.conf_version,
                         merge_consumer_route, route_conf, consumer_conf, consumer_group_conf)
+
+    -- some plugins like limit-count don't care if consumer changes
+    -- all consumers should share the same counter
+    api_ctx.conf_type_without_consumer = api_ctx.conf_type
+    api_ctx.conf_version_without_consumer = api_ctx.conf_version
+    api_ctx.conf_id_without_consumer = api_ctx.conf_id
 
     api_ctx.conf_type = api_ctx.conf_type .. "&consumer"
     api_ctx.conf_version = api_ctx.conf_version .. "&" ..
@@ -774,6 +843,11 @@ function _M.get(name)
 end
 
 
+function _M.get_stream(name)
+    return stream_local_plugins_hash and stream_local_plugins_hash[name]
+end
+
+
 function _M.get_all(attrs)
     local http_plugins = {}
     local stream_plugins = {}
@@ -844,17 +918,12 @@ local function check_single_plugin_schema(name, plugin_conf, schema_type, skip_d
 end
 
 
-check_plugin_metadata = function(item)
-    return check_single_plugin_schema(item.id, item,
-        core.schema.TYPE_METADATA, true)
-end
-
-
 local enable_data_encryption
 local function enable_gde()
     if enable_data_encryption == nil then
         enable_data_encryption =
-            core.table.try_read_attr(local_conf, "apisix", "data_encryption", "enable")
+            core.table.try_read_attr(local_conf, "apisix", "data_encryption",
+                    "enable_encrypt_fields") and (core.config.type == "etcd")
         _M.enable_data_encryption = enable_data_encryption
     end
 
@@ -863,14 +932,19 @@ end
 
 
 local function get_plugin_schema_for_gde(name, schema_type)
-    if not enable_gde() then
+    local plugin_schema = local_plugins_hash and local_plugins_hash[name]
+    if not plugin_schema then
         return nil
     end
 
-    local plugin_schema = local_plugins_hash and local_plugins_hash[name]
     local schema
     if schema_type == core.schema.TYPE_CONSUMER then
-        schema = plugin_schema.consumer_schema
+        -- when we use a non-auth plugin in the consumer,
+        -- where the consumer_schema field does not exist,
+        -- we need to fallback to it's schema for encryption and decryption.
+        schema = plugin_schema.consumer_schema or plugin_schema.schema
+    elseif schema_type == core.schema.TYPE_METADATA then
+        schema = plugin_schema.metadata_schema
     else
         schema = plugin_schema.schema
     end
@@ -880,19 +954,44 @@ end
 
 
 local function decrypt_conf(name, conf, schema_type)
+    if not enable_gde() then
+        return
+    end
     local schema = get_plugin_schema_for_gde(name, schema_type)
     if not schema then
+        core.log.warn("failed to get schema for plugin: ", name)
         return
     end
 
-    for key, props in pairs(schema.properties) do
-        if props.type == "string" and props.encrypted and conf[key] then
-            local encrypted, err = apisix_ssl.aes_decrypt_pkey(conf[key], "data_encrypt")
-            if not encrypted then
-                core.log.warn("failed to decrypt the conf of plugin [", name,
-                               "] key [", key, "], err: ", err)
-            else
-                conf[key] = encrypted
+    if schema.encrypt_fields and not core.table.isempty(schema.encrypt_fields) then
+        for _, key in ipairs(schema.encrypt_fields) do
+            if conf[key] then
+                local decrypted, err = apisix_ssl.aes_decrypt_pkey(conf[key], "data_encrypt")
+                if not decrypted then
+                    core.log.warn("failed to decrypt the conf of plugin [", name,
+                                  "] key [", key, "], err: ", err)
+                else
+                    conf[key] = decrypted
+                end
+            elseif core.string.find(key, ".") then
+                -- decrypt fields has indents
+                local res, err = re_split(key, "\\.", "jo")
+                if not res then
+                    core.log.warn("failed to split key [", key, "], err: ", err)
+                    return
+                end
+
+                -- we only support two levels
+                if conf[res[1]] and conf[res[1]][res[2]] then
+                    local decrypted, err = apisix_ssl.aes_decrypt_pkey(
+                                           conf[res[1]][res[2]], "data_encrypt")
+                    if not decrypted then
+                        core.log.warn("failed to decrypt the conf of plugin [", name,
+                                      "] key [", key, "], err: ", err)
+                    else
+                        conf[res[1]][res[2]] = decrypted
+                    end
+                end
             end
         end
     end
@@ -901,19 +1000,60 @@ _M.decrypt_conf = decrypt_conf
 
 
 local function encrypt_conf(name, conf, schema_type)
+    if not enable_gde() then
+        return
+    end
     local schema = get_plugin_schema_for_gde(name, schema_type)
     if not schema then
+        core.log.warn("failed to get schema for plugin: ", name)
         return
     end
 
-    for key, props in pairs(schema.properties) do
-        if props.type == "string" and props.encrypted and conf[key] then
-            local encrypted = apisix_ssl.aes_encrypt_pkey(conf[key], "data_encrypt")
-            conf[key] = encrypted
+    if schema.encrypt_fields and not core.table.isempty(schema.encrypt_fields) then
+        for _, key in ipairs(schema.encrypt_fields) do
+            if conf[key] then
+                local encrypted, err = apisix_ssl.aes_encrypt_pkey(conf[key], "data_encrypt")
+                if not encrypted then
+                    core.log.warn("failed to encrypt the conf of plugin [", name,
+                                  "] key [", key, "], err: ", err)
+                else
+                    conf[key] = encrypted
+                end
+            elseif core.string.find(key, ".") then
+                -- encrypt fields has indents
+                local res, err = re_split(key, "\\.", "jo")
+                if not res then
+                    core.log.warn("failed to split key [", key, "], err: ", err)
+                    return
+                end
+
+                -- we only support two levels
+                if conf[res[1]] and conf[res[1]][res[2]] then
+                    local encrypted, err = apisix_ssl.aes_encrypt_pkey(
+                                           conf[res[1]][res[2]], "data_encrypt")
+                    if not encrypted then
+                        core.log.warn("failed to encrypt the conf of plugin [", name,
+                                      "] key [", key, "], err: ", err)
+                    else
+                        conf[res[1]][res[2]] = encrypted
+                    end
+                end
+            end
         end
     end
 end
 _M.encrypt_conf = encrypt_conf
+
+
+check_plugin_metadata = function(item)
+    local ok, err = check_single_plugin_schema(item.id, item,
+                                               core.schema.TYPE_METADATA, true)
+    if ok and enable_gde() then
+        decrypt_conf(item.id, item, core.schema.TYPE_METADATA)
+    end
+
+    return ok, err
+end
 
 
 local function check_schema(plugins_conf, schema_type, skip_disabled_plugin)
@@ -1030,7 +1170,9 @@ function _M.run_plugin(phase, plugins, api_ctx)
                 end
 
                 plugin_run = true
+                api_ctx._plugin_name = plugins[i]["name"]
                 local code, body = phase_func(conf, api_ctx)
+                api_ctx._plugin_name = nil
                 if code or body then
                     if is_http then
                         if code >= 400 then
@@ -1065,7 +1207,9 @@ function _M.run_plugin(phase, plugins, api_ctx)
         local conf = plugins[i + 1]
         if phase_func and meta_filter(api_ctx, plugins[i]["name"], conf) then
             plugin_run = true
+            api_ctx._plugin_name = plugins[i]["name"]
             phase_func(conf, api_ctx)
+            api_ctx._plugin_name = nil
         end
     end
 
@@ -1074,8 +1218,7 @@ end
 
 
 function _M.run_global_rules(api_ctx, global_rules, phase_name)
-    if global_rules and global_rules.values
-       and #global_rules.values > 0 then
+    if global_rules and #global_rules > 0 then
         local orig_conf_type = api_ctx.conf_type
         local orig_conf_version = api_ctx.conf_version
         local orig_conf_id = api_ctx.conf_id
@@ -1085,7 +1228,7 @@ function _M.run_global_rules(api_ctx, global_rules, phase_name)
         end
 
         local plugins = core.tablepool.fetch("plugins", 32, 0)
-        local values = global_rules.values
+        local values = global_rules
         local route = api_ctx.matched_route
         for _, global_rule in config_util.iterate_values(values) do
             api_ctx.conf_type = "global_rule"

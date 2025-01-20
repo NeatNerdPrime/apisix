@@ -20,7 +20,6 @@ local log_util        = require("apisix.utils.log-util")
 local core            = require("apisix.core")
 local http            = require("resty.http")
 local url             = require("net.url")
-local plugin          = require("apisix.plugin")
 
 local base64          = require("ngx.base64")
 local ngx_re          = require("ngx.re")
@@ -37,8 +36,24 @@ local schema = {
         endpoint_addr = core.schema.uri_def,
         service_name = {type = "string", default = "APISIX"},
         service_instance_name = {type = "string", default = "APISIX Instance Name"},
+        log_format = {type = "object"},
         timeout = {type = "integer", minimum = 1, default = 3},
         include_req_body = {type = "boolean", default = false},
+        include_req_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
+        include_resp_body = { type = "boolean", default = false },
+        include_resp_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
     },
     required = {"endpoint_addr"},
 }
@@ -47,7 +62,9 @@ local schema = {
 local metadata_schema = {
     type = "object",
     properties = {
-        log_format = log_util.metadata_schema_log_format,
+        log_format = {
+            type = "object"
+        }
     },
 }
 
@@ -65,6 +82,8 @@ function _M.check_schema(conf, schema_type)
     if schema_type == core.schema.TYPE_METADATA then
         return core.schema.check(metadata_schema, conf)
     end
+    local check = {"endpoint_addr"}
+    core.utils.check_https(check, conf, plugin_name)
     return core.schema.check(schema, conf)
 end
 
@@ -114,19 +133,13 @@ local function send_http_data(conf, log_message)
 end
 
 
+function _M.body_filter(conf, ctx)
+    log_util.collect_body(conf, ctx)
+end
+
+
 function _M.log(conf, ctx)
-    local metadata = plugin.plugin_metadata(plugin_name)
-    core.log.info("metadata: ", core.json.delay_encode(metadata))
-
-    local log_body
-    if metadata and metadata.value.log_format
-       and core.table.nkeys(metadata.value.log_format) > 0
-    then
-        log_body = log_util.get_custom_format_log(ctx, metadata.value.log_format)
-    else
-        log_body = log_util.get_full_log(ngx, conf)
-    end
-
+    local log_body = log_util.get_log_entry(plugin_name, conf, ctx)
     local trace_context
     local sw_header = ngx.req.get_headers()["sw8"]
     if sw_header then
@@ -143,6 +156,11 @@ function _M.log(conf, ctx)
         end
     end
 
+    local service_instance_name = conf.service_instance_name
+    if service_instance_name == "$hostname" then
+        service_instance_name = core.utils.gethostname()
+    end
+
     local entry = {
         traceContext = trace_context,
         body = {
@@ -151,7 +169,7 @@ function _M.log(conf, ctx)
             }
         },
         service = conf.service_name,
-        serviceInstance = conf.service_instance_name,
+        serviceInstance = service_instance_name,
         endpoint = ctx.var.uri,
     }
 

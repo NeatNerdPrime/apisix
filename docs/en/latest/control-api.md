@@ -98,71 +98,50 @@ Returns a [health check](./tutorials/health-check.md) of the APISIX instance.
 
 ```json
 [
-    {
-        "healthy_nodes": [
-            {
-                "host": "127.0.0.1",
-                "port": 1980,
-                "priority": 0,
-                "weight": 1
-            }
-        ],
-        "name": "upstream#/upstreams/1",
-        "nodes": [
-            {
-                "host": "127.0.0.1",
-                "port": 1980,
-                "priority": 0,
-                "weight": 1
-            },
-            {
-                "host": "127.0.0.2",
-                "port": 1988,
-                "priority": 0,
-                "weight": 1
-            }
-        ],
-        "src_id": "1",
-        "src_type": "upstreams"
-    },
-    {
-        "healthy_nodes": [
-            {
-                "host": "127.0.0.1",
-                "port": 1980,
-                "priority": 0,
-                "weight": 1
-            }
-        ],
-        "name": "upstream#/routes/1",
-        "nodes": [
-            {
-                "host": "127.0.0.1",
-                "port": 1980,
-                "priority": 0,
-                "weight": 1
-            },
-            {
-                "host": "127.0.0.1",
-                "port": 1988,
-                "priority": 0,
-                "weight": 1
-            }
-        ],
-        "src_id": "1",
-        "src_type": "routes"
-    }
+  {
+    "nodes": [
+      {
+        "ip": "52.86.68.46",
+        "counter": {
+          "http_failure": 0,
+          "success": 0,
+          "timeout_failure": 0,
+          "tcp_failure": 0
+        },
+        "port": 80,
+        "status": "healthy"
+      },
+      {
+        "ip": "100.24.156.8",
+        "counter": {
+          "http_failure": 5,
+          "success": 0,
+          "timeout_failure": 0,
+          "tcp_failure": 0
+        },
+        "port": 80,
+        "status": "unhealthy"
+      }
+    ],
+    "name": "/apisix/routes/1",
+    "type": "http"
+  }
 ]
+
 ```
 
 Each of the returned objects contain the following fields:
 
-* src_type: where the health checker is reporting from. Value is one of  `["routes", "services", "upstreams"]`.
-* src_id: id of the object creating the health checker. For example, if an Upstream
-object with id `1` creates a health checker, the `src_type` is `upstreams` and the `src_id` is `1`.
-* name: name of the health checker.
+* name: resource id, where the health checker is reporting from.
+* type: health check type: `["http", "https", "tcp"]`.
 * nodes: target nodes of the health checker.
-* healthy_nodes: healthy nodes discovered by the health checker.
+* nodes[i].ip: ip address.
+* nodes[i].port: port number.
+* nodes[i].status: health check result: `["healthy", "unhealthy", "mostly_healthy", "mostly_unhealthy"]`.
+* nodes[i].counter.success: success health check count.
+* nodes[i].counter.http_failure: http failures count.
+* nodes[i].counter.tcp_failure: tcp connect/read/write failures count.
+* nodes[i].counter.timeout_failure: timeout count.
 
 You can also use `/v1/healthcheck/$src_type/$src_id` to get the health status of specific nodes.
 
@@ -170,39 +149,49 @@ For example, `GET /v1/healthcheck/upstreams/1` returns:
 
 ```json
 {
-    "healthy_nodes": [
-        {
-            "host": "127.0.0.1",
-            "port": 1980,
-            "priority": 0,
-            "weight": 1
-        }
-    ],
-    "name": "upstream#/upstreams/1",
-    "nodes": [
-        {
-            "host": "127.0.0.1",
-            "port": 1980,
-            "priority": 0,
-            "weight": 1
-        },
-        {
-            "host": "127.0.0.2",
-            "port": 1988,
-            "priority": 0,
-            "weight": 1
-        }
-    ],
-    "src_id": "1",
-    "src_type": "upstreams"
+  "nodes": [
+    {
+      "ip": "52.86.68.46",
+      "counter": {
+        "http_failure": 0,
+        "success": 2,
+        "timeout_failure": 0,
+        "tcp_failure": 0
+      },
+      "port": 80,
+      "status": "healthy"
+    },
+    {
+      "ip": "100.24.156.8",
+      "counter": {
+        "http_failure": 5,
+        "success": 0,
+        "timeout_failure": 0,
+        "tcp_failure": 0
+      },
+      "port": 80,
+      "status": "unhealthy"
+    }
+  ],
+  "type": "http"
+  "name": "/apisix/routes/1"
 }
+
 ```
 
 :::note
 
-As APISIX uses multiple-process architecture, if the process never handles the request of a specific upstream, then the upstream's health check information will not appear on the process. This may result in the health check API can't get all data during testing.
+Only when one upstream is satisfied by the conditions below,
+its status is shown in the result list:
+
+* The upstream is configured with a health checker
+* The upstream has served requests in any worker process
 
 :::
+
+If you use browser to access the control API URL, then you will get the HTML output:
+
+![Health Check Status Page](https://raw.githubusercontent.com/apache/apisix/master/docs/assets/images/health_check_status_page.png)
 
 ### POST /v1/gc
 
@@ -221,7 +210,6 @@ Returns all configured [Routes](./terminology/route.md):
 ```json
 [
   {
-    "update_count": 0,
     "value": {
       "priority": 0,
       "uris": [
@@ -260,7 +248,6 @@ Returns the Route with the specified `route_id`:
 
 ```json
 {
-  "update_count": 0,
   "value": {
     "priority": 0,
     "uris": [
@@ -486,5 +473,83 @@ Dumps the metadata with the specified `plugin_name`:
         "upstream_response_time": "$upstream_response_time"
     },
     "id": "file-logger"
+}
+```
+
+### PUT /v1/plugins/reload
+
+Introduced in [v3.9.0](https://github.com/apache/apisix/releases/tag/3.9.0)
+
+Triggers a hot reload of the plugins.
+
+```shell
+curl "http://127.0.0.1:9090/v1/plugins/reload" -X PUT
+```
+
+### GET /v1/discovery/{service}/dump
+
+Get memory dump of discovered service endpoints and configuration details:
+
+```json
+{
+  "endpoints": [
+    {
+      "endpoints": [
+        {
+          "value": "{\"https\":[{\"host\":\"172.18.164.170\",\"port\":6443,\"weight\":50},{\"host\":\"172.18.164.171\",\"port\":6443,\"weight\":50},{\"host\":\"172.18.164.172\",\"port\":6443,\"weight\":50}]}",
+          "name": "default/kubernetes"
+        },
+        {
+          "value": "{\"metrics\":[{\"host\":\"172.18.164.170\",\"port\":2379,\"weight\":50},{\"host\":\"172.18.164.171\",\"port\":2379,\"weight\":50},{\"host\":\"172.18.164.172\",\"port\":2379,\"weight\":50}]}",
+          "name": "kube-system/etcd"
+        },
+        {
+          "value": "{\"http-85\":[{\"host\":\"172.64.89.2\",\"port\":85,\"weight\":50}]}",
+          "name": "test-ws/testing"
+        }
+      ],
+      "id": "first"
+    }
+  ],
+  "config": [
+    {
+      "default_weight": 50,
+      "id": "first",
+      "client": {
+        "token": "xxx"
+      },
+      "service": {
+        "host": "172.18.164.170",
+        "port": "6443",
+        "schema": "https"
+      },
+      "shared_size": "1m"
+    }
+  ]
+}
+```
+
+## GET /v1/discovery/{service}/show_dump_file
+
+Get configured services details.
+
+```json
+{
+  "services": {
+    "service_a": [
+      {
+        "host": "172.19.5.12",
+        "port": 8000,
+        "weight": 120
+      },
+      {
+        "host": "172.19.5.13",
+        "port": 8000,
+        "weight": 120
+      }
+    ]
+  },
+  "expire": 0,
+  "last_update": 1615877468
 }
 ```

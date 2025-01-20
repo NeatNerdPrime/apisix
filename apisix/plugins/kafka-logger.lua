@@ -14,18 +14,18 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 --
+local expr     = require("resty.expr.v1")
 local core     = require("apisix.core")
 local log_util = require("apisix.utils.log-util")
 local producer = require ("resty.kafka.producer")
 local bp_manager_mod = require("apisix.utils.batch-processor-manager")
-local plugin = require("apisix.plugin")
 
 local math     = math
 local pairs    = pairs
 local type     = type
+local req_read_body = ngx.req.read_body
 local plugin_name = "kafka-logger"
 local batch_processor_manager = bp_manager_mod.new("kafka logger")
-local ngx = ngx
 
 local lrucache = core.lrucache.new({
     type = "plugin",
@@ -39,6 +39,7 @@ local schema = {
             default = "default",
             enum = {"default", "origin"},
         },
+        log_format = {type = "object"},
         -- deprecated, use "brokers" instead
         broker_list = {
             type = "object",
@@ -96,7 +97,7 @@ local schema = {
         required_acks = {
             type = "integer",
             default = 1,
-            enum = { 0, 1, -1 },
+            enum = { 1, -1 },
         },
         key = {type = "string"},
         timeout = {type = "integer", minimum = 1, default = 3},
@@ -116,6 +117,8 @@ local schema = {
                 type = "array"
             }
         },
+        max_req_body_bytes = {type = "integer", minimum = 1, default = 524288},
+        max_resp_body_bytes = {type = "integer", minimum = 1, default = 524288},
         -- in lua-resty-kafka, cluster_name is defined as number
         -- see https://github.com/doujiang24/lua-resty-kafka#new-1
         cluster_name = {type = "integer", minimum = 1, default = 1},
@@ -124,6 +127,7 @@ local schema = {
         producer_batch_size = {type = "integer", minimum = 0, default = 1048576},
         producer_max_buffering = {type = "integer", minimum = 1, default = 50000},
         producer_time_linger = {type = "integer", minimum = 1, default = 1},
+        meta_refresh_interval = {type = "integer", minimum = 1, default = 30},
     },
     oneOf = {
         { required = {"broker_list", "kafka_topic"},},
@@ -134,7 +138,9 @@ local schema = {
 local metadata_schema = {
     type = "object",
     properties = {
-        log_format = log_util.metadata_schema_log_format,
+        log_format = {
+            type = "object"
+        }
     },
 }
 
@@ -208,6 +214,32 @@ local function send_kafka_data(conf, log_message, prod)
 end
 
 
+function _M.access(conf, ctx)
+    if conf.include_req_body then
+        local should_read_body = true
+        if conf.include_req_body_expr then
+            if not conf.request_expr then
+                local request_expr, err = expr.new(conf.include_req_body_expr)
+                if not request_expr then
+                    core.log.error('generate request expr err ', err)
+                    return
+                end
+                conf.request_expr = request_expr
+            end
+
+            local result = conf.request_expr:eval(ctx.var)
+
+            if not result then
+                should_read_body = false
+            end
+        end
+        if should_read_body then
+            req_read_body()
+        end
+    end
+end
+
+
 function _M.body_filter(conf, ctx)
     log_util.collect_body(conf, ctx)
 end
@@ -220,17 +252,7 @@ function _M.log(conf, ctx)
         -- core.log.info("origin entry: ", entry)
 
     else
-        local metadata = plugin.plugin_metadata(plugin_name)
-        core.log.info("metadata: ", core.json.delay_encode(metadata))
-        if metadata and metadata.value.log_format
-          and core.table.nkeys(metadata.value.log_format) > 0
-        then
-            entry = log_util.get_custom_format_log(ctx, metadata.value.log_format)
-            core.log.info("custom log format entry: ", core.json.delay_encode(entry))
-        else
-            entry = log_util.get_full_log(ngx, conf)
-            core.log.info("full log entry: ", core.json.delay_encode(entry))
-        end
+        entry = log_util.get_log_entry(plugin_name, conf, ctx)
     end
 
     if batch_processor_manager:add_entry(conf, entry) then
@@ -258,6 +280,7 @@ function _M.log(conf, ctx)
     broker_config["batch_size"] = conf.producer_batch_size
     broker_config["max_buffering"] = conf.producer_max_buffering
     broker_config["flush_time"] = conf.producer_time_linger * 1000
+    broker_config["refresh_interval"] = conf.meta_refresh_interval * 1000
 
     local prod, err = core.lrucache.plugin_ctx(lrucache, ctx, nil, create_producer,
                                                broker_list, broker_config, conf.cluster_name)

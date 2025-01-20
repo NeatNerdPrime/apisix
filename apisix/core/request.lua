@@ -21,6 +21,7 @@
 
 local lfs = require("lfs")
 local log = require("apisix.core.log")
+local json = require("apisix.core.json")
 local io = require("apisix.core.io")
 local req_add_header
 if ngx.config.subsystem == "http" then
@@ -42,6 +43,8 @@ local req_get_body_file = ngx.req.get_body_file
 local req_get_post_args = ngx.req.get_post_args
 local req_get_uri_args = ngx.req.get_uri_args
 local req_set_uri_args = ngx.req.set_uri_args
+local table_insert = table.insert
+local req_set_header = ngx.req.set_header
 
 
 local _M = {}
@@ -53,17 +56,17 @@ local function _headers(ctx)
     end
 
     if not is_apisix_or then
-        return get_headers(0)
+        return get_headers()
     end
 
     if a6_request.is_request_header_set() then
         a6_request.clear_request_header()
-        ctx.headers = get_headers(0)
+        ctx.headers = get_headers()
     end
 
     local headers = ctx.headers
     if not headers then
-        headers = get_headers(0)
+        headers = get_headers()
         ctx.headers = headers
     end
 
@@ -105,11 +108,12 @@ function _M.header(ctx, name)
     if not ctx then
         ctx = ngx.ctx.api_ctx
     end
-    return _headers(ctx)[name]
+
+    local value = _headers(ctx)[name]
+    return type(value) == "table" and value[1] or value
 end
 
-
-function _M.set_header(ctx, header_name, header_value)
+local function modify_header(ctx, header_name, header_value, override)
     if type(ctx) == "string" then
         -- It would be simpler to keep compatibility if we put 'ctx'
         -- after 'header_value', but the style is too ugly!
@@ -117,7 +121,11 @@ function _M.set_header(ctx, header_name, header_value)
         header_name = ctx
         ctx = nil
 
-        log.warn("DEPRECATED: use set_header(ctx, header_name, header_value) instead")
+        if override then
+            log.warn("DEPRECATED: use set_header(ctx, header_name, header_value) instead")
+        else
+            log.warn("DEPRECATED: use add_header(ctx, header_name, header_value) instead")
+        end
     end
 
     local err
@@ -131,26 +139,42 @@ function _M.set_header(ctx, header_name, header_value)
         changed = a6_request.is_request_header_set()
     end
 
-    ngx.req.set_header(header_name, header_value)
+    if override then
+        req_set_header(header_name, header_value)
+    else
+        req_add_header(header_name, header_value)
+    end
+
+    if ctx and ctx.var then
+        -- when the header is updated, clear cache of ctx.var
+        ctx.var["http_" .. str_lower(header_name)] = nil
+    end
 
     if is_apisix_or and not changed then
         -- if the headers are not changed before,
         -- we can only update part of the cache instead of invalidating the whole
         a6_request.clear_request_header()
         if ctx and ctx.headers then
-            ctx.headers[header_name] = header_value
+            if override or not ctx.headers[header_name] then
+                ctx.headers[header_name] = header_value
+            else
+                local values = ctx.headers[header_name]
+                if type(values) == "table" then
+                    table_insert(values, header_value)
+                else
+                    ctx.headers[header_name] = {values, header_value}
+                end
+            end
         end
     end
 end
 
-function _M.add_header(header_name, header_value)
-    local err
-    header_name, err = _validate_header_name(header_name)
-    if err then
-        error(err)
-    end
+function _M.set_header(ctx, header_name, header_value)
+    modify_header(ctx, header_name, header_value, true)
+end
 
-    req_add_header(header_name, header_value)
+function _M.add_header(ctx, header_name, header_value)
+    modify_header(ctx, header_name, header_value, false)
 end
 
 -- return the remote address of client which directly connecting to APISIX.
@@ -266,6 +290,15 @@ function _M.get_body(max_size, ctx)
         end
     end
 
+    -- check content-length header for http2/http3
+    do
+        local var = ctx and ctx.var or ngx.var
+        local content_length = tonumber(var.http_content_length)
+        if (var.server_protocol == "HTTP/2.0" or var.server_protocol == "HTTP/3.0")
+            and not content_length then
+            return nil, "HTTP2/HTTP3 request without a Content-Length header"
+        end
+    end
     req_read_body()
 
     local req_body = req_get_body_data()
@@ -299,6 +332,21 @@ function _M.get_body(max_size, ctx)
 
     local req_body, err = io.get_file(file_name)
     return req_body, err
+end
+
+
+function _M.get_json_request_body_table()
+    local body, err = _M.get_body()
+    if not body then
+        return nil, { message = "could not get body: " .. (err or "request body is empty") }
+    end
+
+    local body_tab, err = json.decode(body)
+    if not body_tab then
+        return nil, { message = "could not get parse JSON request body: " .. err }
+    end
+
+    return body_tab
 end
 
 

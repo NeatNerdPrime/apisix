@@ -14,11 +14,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+BEGIN {
+    $ENV{VAULT_TOKEN} = "root";
+}
+
 use t::APISIX 'no_plan';
 
 repeat_each(2);
 no_long_string();
 no_root_location();
+
+add_block_preprocessor(sub {
+    my ($block) = @_;
+
+    my $user_yaml_config = <<_EOC_;
+apisix:
+  data_encryption:
+    enable_encrypt_fields: false
+_EOC_
+    $block->set_value("yaml_config", $user_yaml_config);
+});
+
+
 run_tests;
 
 __DATA__
@@ -156,7 +173,7 @@ apikey: 123
 GET /hello
 --- error_code: 401
 --- response_body
-{"message":"Missing API key found in request"}
+{"message":"Missing API key in request"}
 
 
 
@@ -578,13 +595,12 @@ auth: authone
 
 
 
-=== TEST 28: put secret vault config
---- request
-GET /t
+=== TEST 28: set key-auth conf: key uses secret ref
 --- config
     location /t {
         content_by_lua_block {
             local t = require("lib.test_admin").test
+            -- put secret vault config
             local etcd = require("apisix.core.etcd")
             local code, body = t('/apisix/admin/secrets/vault/test1',
                 ngx.HTTP_PUT,
@@ -592,38 +608,22 @@ GET /t
                     "uri": "http://127.0.0.1:8200",
                     "prefix" : "kv/apisix",
                     "token" : "root"
-                }]],
-                [[{
-                    "value": {
-                        "uri": "http://127.0.0.1:8200",
-                        "prefix" : "kv/apisix",
-                        "token" : "root"
-                    },
-                    "key": "/apisix/secrets/vault/test1"
                 }]]
                 )
 
-            ngx.status = code
-            ngx.say(body)
-        }
-    }
---- response_body
-passed
+            if code >= 300 then
+                ngx.status = code
+                return ngx.say(body)
+            end
 
-
-
-=== TEST 29: change consumer with secrets ref: vault
---- config
-    location /t {
-        content_by_lua_block {
-            local t = require("lib.test_admin").test
+            -- change consumer with secrets ref: vault
             local code, body = t('/apisix/admin/consumers',
                 ngx.HTTP_PUT,
                 [[{
                     "username": "jack",
                     "plugins": {
                         "key-auth": {
-                            "key": "$secret://vault/test1/jack/auth-key"
+                            "key": "$secret://vault/test1/jack/key"
                         }
                     }
                 }]]
@@ -642,15 +642,67 @@ passed
 
 
 
-=== TEST 30: store secret into vault
+=== TEST 29: store secret into vault
 --- exec
-VAULT_TOKEN='root' VAULT_ADDR='http://0.0.0.0:8200' vault kv put kv/apisix/jack auth-key=authtwo
+VAULT_TOKEN='root' VAULT_ADDR='http://0.0.0.0:8200' vault kv put kv/apisix/jack key=authtwo
 --- response_body
 Success! Data written to: kv/apisix/jack
 
 
 
-=== TEST 31: verify auth request
+=== TEST 30: verify auth request
+--- request
+GET /hello?auth=authtwo
+--- response_args
+auth: authtwo
+
+
+
+=== TEST 31: set key-auth conf with the token in an env var: key uses secret ref
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+            -- put secret vault config
+            local etcd = require("apisix.core.etcd")
+            local code, body = t('/apisix/admin/secrets/vault/test1',
+                ngx.HTTP_PUT,
+                [[{
+                    "uri": "http://127.0.0.1:8200",
+                    "prefix" : "kv/apisix",
+                    "token" : "$ENV://VAULT_TOKEN"
+                }]]
+                )
+            if code >= 300 then
+                ngx.status = code
+                return ngx.say(body)
+            end
+            -- change consumer with secrets ref: vault
+            local code, body = t('/apisix/admin/consumers',
+                ngx.HTTP_PUT,
+                [[{
+                    "username": "jack",
+                    "plugins": {
+                        "key-auth": {
+                            "key": "$secret://vault/test1/jack/key"
+                        }
+                    }
+                }]]
+                )
+            if code >= 300 then
+                ngx.status = code
+            end
+            ngx.say(body)
+        }
+    }
+--- request
+GET /t
+--- response_body
+passed
+
+
+
+=== TEST 32: verify auth request
 --- request
 GET /hello?auth=authtwo
 --- response_args

@@ -58,6 +58,10 @@ end
 -- or cancelled. Note that Nginx worker exit doesn't trigger the clean handler.
 -- Return an index so that we can cancel it later.
 function _M.add_clean_handler(item, func)
+    if not item.clean_handlers then
+        return nil, "clean handlers for the item are nil"
+    end
+
     if not item.clean_handlers._id then
         item.clean_handlers._id = 1
     end
@@ -88,14 +92,24 @@ function _M.cancel_clean_handler(item, idx, fire)
     end
 
     core_tab.remove(item.clean_handlers, pos)
-    if fire then
+    if not fire then
+        return
+    end
+
+    if f then
         f(item)
+    else
+        log.error("The function used to clear the health checker is nil, please check")
     end
 end
 
 
 -- fire all clean handlers added by add_clean_handler.
 function _M.fire_all_clean_handlers(item)
+    -- When the key is deleted, the item will be set to false.
+    if not item then
+        return
+    end
     if not item.clean_handlers then
         return
     end
@@ -104,7 +118,7 @@ function _M.fire_all_clean_handlers(item)
         clean_handler.f(item)
     end
 
-    item.clean_handlers = nil
+    item.clean_handlers = {}
 end
 
 

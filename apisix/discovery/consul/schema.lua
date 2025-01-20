@@ -24,6 +24,7 @@ return {
                 type = "string",
             }
         },
+        token = {type = "string", default = ""},
         fetch_interval = {type = "integer", minimum = 1, default = 3},
         keepalive = {
             type = "boolean",
@@ -42,6 +43,11 @@ return {
                 read = 2000,
                 wait = 60,
             }
+        },
+        sort_type = {
+            type = "string",
+            enum = {"origin", "host_sort", "port_sort", "combine_sort"},
+            default = "origin",
         },
         skip_services = {
             type = "array",

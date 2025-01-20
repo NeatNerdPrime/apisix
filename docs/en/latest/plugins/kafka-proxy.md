@@ -1,7 +1,8 @@
 ---
 title: kafka-proxy
 keywords:
-  - APISIX
+  - Apache APISIX
+  - API Gateway
   - Plugin
   - Kafka proxy
 description: This document contains information about the Apache APISIX kafka-proxy Plugin.
@@ -37,6 +38,8 @@ The `kafka-proxy` plugin can be used to configure advanced parameters for the ka
 | sasl              | object  | optional |         | {"username": "user", "password" :"pwd"} | SASL/PLAIN authentication configuration, when this configuration exists, turn on SASL authentication; this object will contain two parameters username and password, they must be configured. |
 | sasl.username     | string  | required |         |               | SASL/PLAIN authentication username |
 | sasl.password     | string  | required |         |               | SASL/PLAIN authentication password |
+
+NOTE: `encrypt_fields = {"sasl.password"}` is also defined in the schema, which means that the field will be stored encrypted in etcd. See [encrypted storage fields](../plugin-develop.md#encrypted-storage-fields).
 
 :::note
 If SASL authentication is enabled, the `sasl.username` and `sasl.password` must be set.
@@ -75,6 +78,6 @@ curl -X PUT 'http://127.0.0.1:9180/apisix/admin/routes/r1' \
 
 Now, we can test it by connecting to the `/kafka` endpoint via websocket.
 
-## Disable Plugin
+## Delete Plugin
 
-To disable the `kafka-proxy` Plugin, you can delete the corresponding JSON configuration from the Plugin configuration. APISIX will automatically reload and you do not have to restart for this to take effect.
+To remove the `kafka-proxy` Plugin, you can delete the corresponding JSON configuration from the Plugin configuration. APISIX will automatically reload and you do not have to restart for this to take effect.

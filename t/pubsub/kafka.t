@@ -14,18 +14,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+use Cwd qw(cwd);
 use t::APISIX 'no_plan';
 
 repeat_each(1);
 no_long_string();
 no_root_location();
 
+my $apisix_home = $ENV{APISIX_HOME} // cwd();
+
 add_block_preprocessor(sub {
     my ($block) = @_;
+
+    my $block_init = <<_EOC_;
+    `ln -sf $apisix_home/apisix $apisix_home/t/servroot/apisix`;
+_EOC_
+
+    $block->set_value("init", $block_init);
 
     if (!defined $block->request) {
         $block->set_value("request", "GET /t");
     }
+});
+
+add_test_cleanup_handler(sub {
+    `rm -f $apisix_home/t/servroot/apisix`;
 });
 
 run_tests();
@@ -146,6 +159,7 @@ failed to initialize pubsub module, err: bad "upgrade" request header: nil
     # script that prepares the CI environment
     location /t {
         content_by_lua_block {
+            local pb         = require("pb")
             local lib_pubsub = require("lib.pubsub")
             local test_pubsub = lib_pubsub.new_ws("ws://127.0.0.1:1984/kafka")
             local data = {
@@ -222,6 +236,8 @@ failed to initialize pubsub module, err: bad "upgrade" request header: nil
             }
 
             for i = 1, #data do
+                -- force clear state
+                pb.state(nil)
                 local data = test_pubsub:send_recv_ws_binary(data[i])
                 if data.error_resp then
                     ngx.say(data.sequence..data.error_resp.message)

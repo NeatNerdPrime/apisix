@@ -32,22 +32,54 @@ local schema = {
         tls = {type = "boolean", default = false},
         tls_options = {type = "string"},
         timeout = {type = "integer", minimum = 1, default= 1000},
-        include_req_body = {type = "boolean", default = false}
+        log_format = {type = "object"},
+        include_req_body = {type = "boolean", default = false},
+        include_req_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
+        include_resp_body = { type = "boolean", default = false },
+        include_resp_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
     },
     required = {"host", "port"}
 }
 
+local metadata_schema = {
+    type = "object",
+    properties = {
+        log_format = {
+            type = "object"
+        }
+    },
+}
 
 local _M = {
     version = 0.1,
     priority = 405,
     name = plugin_name,
+    metadata_schema = metadata_schema,
     schema = batch_processor_manager:wrap_schema(schema),
 }
 
-function _M.check_schema(conf)
+
+function _M.check_schema(conf, schema_type)
+    if schema_type == core.schema.TYPE_METADATA then
+        return core.schema.check(metadata_schema, conf)
+    end
+
+    core.utils.check_tls_bool({"tls"}, conf, plugin_name)
     return core.schema.check(schema, conf)
 end
+
 
 local function send_tcp_data(conf, log_message)
     local err_msg
@@ -61,6 +93,7 @@ local function send_tcp_data(conf, log_message)
     sock:settimeout(conf.timeout)
 
     core.log.info("sending a batch logs to ", conf.host, ":", conf.port)
+    core.log.info("sending log_message: ", log_message)
 
     local ok, err = sock:connect(conf.host, conf.port)
     if not ok then
@@ -93,8 +126,13 @@ local function send_tcp_data(conf, log_message)
 end
 
 
+function _M.body_filter(conf, ctx)
+    log_util.collect_body(conf, ctx)
+end
+
+
 function _M.log(conf, ctx)
-    local entry = log_util.get_full_log(ngx, conf)
+    local entry = log_util.get_log_entry(plugin_name, conf, ctx)
 
     if batch_processor_manager:add_entry(conf, entry) then
         return

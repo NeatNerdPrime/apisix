@@ -33,13 +33,6 @@ my $nginx_binary = $ENV{'TEST_NGINX_BINARY'} || 'nginx';
 $ENV{TEST_NGINX_HTML_DIR} ||= html_dir();
 $ENV{TEST_NGINX_FAST_SHUTDOWN} ||= 1;
 
-Test::Nginx::Socket::set_http_config_filter(sub {
-    my $config = shift;
-    my $snippet = `$apisix_home/t/bin/gen_snippet.lua conf_server`;
-    $config .= $snippet;
-    return $config;
-});
-
 sub read_file($) {
     my $infile = shift;
     open my $in, "$apisix_home/$infile"
@@ -85,10 +78,15 @@ if ($custom_dns_server) {
 }
 
 
-my $default_yaml_config = read_file("conf/config-default.yaml");
-# enable example-plugin as some tests require it
-$default_yaml_config =~ s/#- example-plugin/- example-plugin/;
-$default_yaml_config =~ s/enable_export_server: true/enable_export_server: false/;
+my $events_module = $ENV{TEST_EVENTS_MODULE} // "lua-resty-events";
+my $test_default_config = <<_EOC_;
+    -- read the default configuration, modify it, and the Lua package
+    -- cache will persist it for loading by other entrypoints
+    -- it is used to replace the test::nginx implementation
+    local default_config = require("apisix.cli.config")
+    default_config.plugin_attr.prometheus.enable_export_server = false
+    default_config.apisix.events.module = "$events_module"
+_EOC_
 
 my $user_yaml_config = read_file("conf/config.yaml");
 my $ssl_crt = read_file("t/certs/apisix.crt");
@@ -102,6 +100,7 @@ my $etcd_key = read_file("t/certs/etcd.key");
 $user_yaml_config = <<_EOC_;
 apisix:
   node_listen: 1984
+  proxy_mode: http&stream
   stream_proxy:
     tcp:
       - 9100
@@ -203,8 +202,10 @@ _EOC_
 
 $grpc_location .= <<_EOC_;
             grpc_set_header   Content-Type application/grpc;
+            grpc_set_header   TE trailers;
             grpc_socket_keepalive on;
             grpc_pass         \$upstream_scheme://apisix_backend;
+            mirror              /proxy_mirror_grpc;
 
             header_filter_by_lua_block {
                 apisix.http_header_filter_phase()
@@ -264,6 +265,7 @@ env ENABLE_ETCD_AUTH;
 env APISIX_PROFILE;
 env PATH; # for searching external plugin runner's binary
 env TEST_NGINX_HTML_DIR;
+env OPENSSL_BIN;
 _EOC_
 
 
@@ -391,6 +393,12 @@ _EOC_
     lua_shared_dict lrucache-lock-stream 10m;
     lua_shared_dict plugin-limit-conn-stream 10m;
     lua_shared_dict etcd-cluster-health-check-stream 10m;
+    lua_shared_dict worker-events-stream 10m;
+
+    lua_shared_dict kubernetes-stream 1m;
+    lua_shared_dict kubernetes-first-stream 1m;
+    lua_shared_dict kubernetes-second-stream 1m;
+    lua_shared_dict tars-stream 1m;
 
     upstream apisix_backend {
         server 127.0.0.1:1900;
@@ -400,6 +408,8 @@ _EOC_
     }
 _EOC_
 
+    my $stream_extra_init_by_lua_start = $block->stream_extra_init_by_lua_start // "";
+
     my $stream_init_by_lua_block = $block->stream_init_by_lua_block // <<_EOC_;
         if os.getenv("APISIX_ENABLE_LUACOV") == "1" then
             require("luacov.runner")("t/apisix.luacov")
@@ -407,6 +417,8 @@ _EOC_
         end
 
         require "resty.core"
+
+        $stream_extra_init_by_lua_start
 
         apisix = require("apisix")
         local args = {
@@ -420,6 +432,7 @@ _EOC_
 
     $stream_config .= <<_EOC_;
     init_by_lua_block {
+        $test_default_config
         $stream_init_by_lua_block
         $stream_extra_init_by_lua
     }
@@ -429,6 +442,14 @@ _EOC_
     }
 
     $extra_stream_config
+
+    server {
+        listen unix:$apisix_home/t/servroot/logs/stream_worker_events.sock;
+        access_log off;
+        content_by_lua_block {
+            require("resty.events.compat").run()
+        }
+    }
 
     # fake server, only for test
     server {
@@ -443,6 +464,8 @@ _EOC_
     if (defined $stream_enable) {
         $block->set_value("stream_config", $stream_config);
     }
+
+    my $custom_trusted_cert = $block->custom_trusted_cert // 'cert/apisix.crt';
 
     my $stream_server_config = $block->stream_server_config // <<_EOC_;
     listen 2005 ssl;
@@ -517,7 +540,7 @@ _EOC_
     }
     apisix.http_init(args)
 
-    -- set apisix_lua_home into constans module
+    -- set apisix_lua_home into constants module
     -- it may be used by plugins to determine the work path of apisix
     local constants = require("apisix.constants")
     constants.apisix_lua_home = "$apisix_home"
@@ -533,6 +556,7 @@ _EOC_
 
     lua_shared_dict plugin-limit-req 10m;
     lua_shared_dict plugin-limit-count 10m;
+    lua_shared_dict plugin-limit-count-reset-header 10m;
     lua_shared_dict plugin-limit-conn 10m;
     lua_shared_dict internal-status 10m;
     lua_shared_dict upstream-healthcheck 32m;
@@ -541,7 +565,9 @@ _EOC_
     lua_shared_dict balancer-ewma 1m;
     lua_shared_dict balancer-ewma-locks 1m;
     lua_shared_dict balancer-ewma-last-touched-at 1m;
+    lua_shared_dict plugin-limit-req-redis-cluster-slot-lock 1m;
     lua_shared_dict plugin-limit-count-redis-cluster-slot-lock 1m;
+    lua_shared_dict plugin-limit-conn-redis-cluster-slot-lock 1m;
     lua_shared_dict tracing_buffer 10m;    # plugin skywalking
     lua_shared_dict access-tokens 1m;    # plugin authz-keycloak
     lua_shared_dict discovery 1m;    # plugin authz-keycloak
@@ -553,6 +579,7 @@ _EOC_
     lua_shared_dict kubernetes-first 1m;
     lua_shared_dict kubernetes-second 1m;
     lua_shared_dict tars 1m;
+    lua_shared_dict ocsp-stapling 10m;
     lua_shared_dict xds-config 1m;
     lua_shared_dict xds-config-version 1m;
     lua_shared_dict cas_sessions 10m;
@@ -600,6 +627,7 @@ _EOC_
     $dubbo_upstream
 
     init_by_lua_block {
+        $test_default_config
         $init_by_lua_block
     }
 
@@ -636,6 +664,8 @@ _EOC_
         $ipv6_fake_server
         server_tokens off;
 
+        access_log logs/fake-server-access.log main;
+
         location / {
             content_by_lua_block {
                 require("lib.server").go()
@@ -661,6 +691,8 @@ _EOC_
     $http_config .= <<_EOC_;
         server_tokens off;
 
+        access_log logs/fake-server-access.log main;
+
         ssl_certificate_by_lua_block {
             local ngx_ssl = require "ngx.ssl"
             ngx.log(ngx.WARN, "Receive SNI: ", ngx_ssl.server_name())
@@ -677,6 +709,18 @@ _EOC_
 
 _EOC_
 
+    $http_config .= <<_EOC_;
+    server {
+        listen unix:$apisix_home/t/servroot/logs/worker_events.sock;
+        access_log off;
+        location / {
+            content_by_lua_block {
+                require("resty.events.compat").run()
+            }
+        }
+    }
+_EOC_
+
     $block->set_value("http_config", $http_config);
 
     my $TEST_NGINX_HTML_DIR = $ENV{TEST_NGINX_HTML_DIR} ||= html_dir();
@@ -689,14 +733,25 @@ _EOC_
     $config .= <<_EOC_;
         $ipv6_listen_conf
 
-        listen 1994 ssl http2;
+        listen 1994 quic reuseport;
+        listen 1994 ssl;
+        http2 on;
+        http3 off;
         ssl_certificate             cert/apisix.crt;
         ssl_certificate_key         cert/apisix.key;
-        lua_ssl_trusted_certificate cert/apisix.crt;
+        lua_ssl_trusted_certificate $custom_trusted_cert;
+
+        ssl_protocols TLSv1.1 TLSv1.2 TLSv1.3;
+
+        ssl_client_hello_by_lua_block {
+            apisix.http_ssl_client_hello_phase()
+        }
 
         ssl_certificate_by_lua_block {
             apisix.http_ssl_phase()
         }
+
+        access_log logs/access.log main;
 
         set \$dubbo_service_name          '';
         set \$dubbo_service_version       '';
@@ -725,6 +780,7 @@ _EOC_
         }
 
         location / {
+            set \$upstream_mirror_host        '';
             set \$upstream_mirror_uri         '';
             set \$upstream_upgrade            '';
             set \$upstream_connection         '';
@@ -765,16 +821,11 @@ _EOC_
 
             ### the following x-forwarded-* headers is to send to upstream server
 
-            set \$var_x_forwarded_for        \$remote_addr;
             set \$var_x_forwarded_proto      \$scheme;
             set \$var_x_forwarded_host       \$host;
             set \$var_x_forwarded_port       \$server_port;
 
-            if (\$http_x_forwarded_for != "") {
-                set \$var_x_forwarded_for "\${http_x_forwarded_for}, \${realip_remote_addr}";
-            }
-
-            proxy_set_header   X-Forwarded-For      \$var_x_forwarded_for;
+            proxy_set_header   X-Forwarded-For      \$proxy_add_x_forwarded_for;
             proxy_set_header   X-Forwarded-Proto    \$var_x_forwarded_proto;
             proxy_set_header   X-Forwarded-Host     \$var_x_forwarded_host;
             proxy_set_header   X-Forwarded-Port     \$var_x_forwarded_port;
@@ -815,6 +866,22 @@ _EOC_
             proxy_set_header Host \$upstream_host;
             proxy_pass \$upstream_mirror_uri;
         }
+
+        location = /proxy_mirror_grpc {
+            internal;
+_EOC_
+
+    if ($version !~ m/\/apisix-nginx-module/) {
+        $config .= <<_EOC_;
+            if (\$upstream_mirror_uri = "") {
+                return 200;
+            }
+_EOC_
+    }
+
+    $config .= <<_EOC_;
+            grpc_pass \$upstream_mirror_host;
+        }
 _EOC_
 
     $block->set_value("config", $config);
@@ -839,17 +906,6 @@ deployment:
 _EOC_
 
     if ($yaml_config !~ m/deployment:/) {
-        # TODO: remove this temporary option once we have using gRPC by default
-        if ($ENV{TEST_CI_USE_GRPC}) {
-            $default_deployment .= <<_EOC_;
-  etcd:
-    host:
-      - "http://127.0.0.1:2379"
-    prefix: /apisix
-    use_grpc: true
-_EOC_
-        }
-
         $yaml_config = $default_deployment . $yaml_config;
     }
 
@@ -863,8 +919,6 @@ _EOC_
     $user_files .= <<_EOC_;
 >>> ../conf/$debug_file
 $user_debug_config
->>> ../conf/config-default.yaml
-$default_yaml_config
 >>> ../conf/$config_file
 $yaml_config
 >>> ../conf/cert/apisix.crt

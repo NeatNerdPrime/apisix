@@ -1,10 +1,10 @@
 ---
 title: openfunction
 keywords:
-  - APISIX
+  - Apache APISIX
+  - API Gateway
   - Plugin
   - OpenFunction
-  - openfunction
 description: This document contains information about the Apache APISIX openfunction Plugin.
 ---
 
@@ -76,8 +76,17 @@ kubectl create secret docker-registry push-secret \
 
 You can now configure the Plugin on a specific Route and point to this running OpenFunction service:
 
+:::note
+You can fetch the `admin_key` from `config.yaml` and save to an environment variable with the following command:
+
+```bash
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+```
+
+:::
+
 ```shell
-curl http://127.0.0.1:9180/apisix/admin/routes/1 -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+curl http://127.0.0.1:9180/apisix/admin/routes/1 -H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "uri": "/hello",
     "plugins": {
@@ -118,7 +127,7 @@ The `uri` configured on a Route must end with `*` for this feature to work prope
 The example below configures this feature:
 
 ```shell
-curl http://127.0.0.1:9180/apisix/admin/routes/1 -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+curl http://127.0.0.1:9180/apisix/admin/routes/1 -H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "uri": "/hello/*",
     "plugins": {
@@ -142,12 +151,12 @@ curl  http://127.0.0.1:9080/hello/123
 Hello, 123!
 ```
 
-## Disable Plugin
+## Delete Plugin
 
-To disable the `openfunction` Plugin, you can delete the corresponding JSON configuration from the Plugin configuration. APISIX will automatically reload and you do not have to restart for this to take effect.
+To remove the `openfunction` Plugin, you can delete the corresponding JSON configuration from the Plugin configuration. APISIX will automatically reload and you do not have to restart for this to take effect.
 
 ```shell
-curl http://127.0.0.1:9180/apisix/admin/routes/1  -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+curl http://127.0.0.1:9180/apisix/admin/routes/1  -H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "methods": ["GET"],
     "uri": "/index.html",

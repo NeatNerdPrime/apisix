@@ -32,11 +32,11 @@ description: This article introduce how to perform service discovery based on Ku
 
 The [_Kubernetes_](https://kubernetes.io/) service discovery [_List-Watch_](https://kubernetes.io/docs/reference/using-api/api-concepts/) real-time changes of [_Endpoints_](https://kubernetes.io/docs/concepts/services-networking/service/) resources, then store theirs value into `ngx.shared.DICT`.
 
-Discovery also provides a node query interface in accordance with the [_APISIX Discovery Specification_](https://github.com/apache/apisix/blob/master/docs/en/latest/discovery.md).
+Discovery also provides a node query interface in accordance with the [_APISIX Discovery Specification_](../discovery.md).
 
 ## How To Use
 
-Kubernetes service discovery both support single-cluster and multi-cluster mode, applicable to the case where the service is distributed in a single or multiple Kubernetes clusters.
+Kubernetes service discovery both support single-cluster and multi-cluster modes, applicable to the case where the service is distributed in single or multiple Kubernetes clusters.
 
 ### Single-Cluster Mode Configuration
 
@@ -91,6 +91,9 @@ discovery:
 
     # reserved lua shared memory size,1m memory can store about 1000 pieces of endpoint
     shared_size: 1m #default 1m
+
+    # if watch_endpoint_slices setting true, watch apiserver with endpointslices instead of endpoints
+    watch_endpoint_slices: false #default false
 ```
 
 If the Kubernetes service discovery runs inside a pod, you can use minimal configuration:
@@ -116,7 +119,7 @@ discovery:
 
 ### Single-Cluster Mode Query Interface
 
-The Kubernetes service discovery provides a query interface in accordance with the [_APISIX Discovery Specification_](https://github.com/apache/apisix/blob/master/docs/en/latest/discovery.md).
+The Kubernetes service discovery provides a query interface in accordance with the [_APISIX Discovery Specification_](../discovery.md).
 
 **function:**
  nodes(service_name)
@@ -129,7 +132,7 @@ The Kubernetes service discovery provides a query interface in accordance with t
 
   + name: The name of the Kubernetes endpoints
 
-  + portName: The ports.name value in the Kubernetes endpoints, if there is no ports.name, use targetPort, port instead
+  + portName: The `ports.name` value in the Kubernetes endpoints, if there is no `ports.name`, use `targetPort`, `port` instead. If `ports.name` exists, then port number cannot be used.
 
 **return value:**
   if the Kubernetes endpoints value is as follows:
@@ -220,13 +223,16 @@ discovery:
 
     # reserved lua shared memory size,1m memory can store about 1000 pieces of endpoint
     shared_size: 1m #default 1m
+
+    # if watch_endpoint_slices setting true, watch apiserver with endpointslices instead of endpoints
+    watch_endpoint_slices: false #default false
 ```
 
 Multi-Kubernetes service discovery does not fill default values for service and client fields, you need to fill them according to the cluster configuration.
 
 ### Multi-Cluster Mode Query Interface
 
-The Kubernetes service discovery provides a query interface in accordance with the [_APISIX Discovery Specification_](https://github.com/apache/apisix/blob/master/docs/en/latest/discovery.md).
+The Kubernetes service discovery provides a query interface in accordance with the [_APISIX Discovery Specification_](../discovery.md).
 
 **function:**
 nodes(service_name)
@@ -241,7 +247,7 @@ service_name should match pattern: _[id]/[namespace]/[name]:[portName]_
 
 + name: The name of the Kubernetes endpoints
 
-+ portName: The ports.name value in the Kubernetes endpoints, if there is no ports.name, use targetPort, port instead
++ portName: The `ports.name` value in the Kubernetes endpoints, if there is no `ports.name`, use `targetPort`, `port` instead. If `ports.name` exists, then port number cannot be used.
 
 **return value:**
 if the Kubernetes endpoints value is as follows:
@@ -312,7 +318,7 @@ metadata:
  name: apisix-test
 rules:
 - apiGroups: [ "" ]
-  resources: [ endpoints ]
+  resources: [ endpoints,endpointslices ]
   verbs: [ get,list,watch ]
 ---
 
@@ -345,3 +351,56 @@ A: Assume your [_ServiceAccount_](https://kubernetes.io/docs/tasks/configure-pod
  ```shell
  kubectl -n apisix get secret kubernetes-discovery-token-c64cv -o jsonpath={.data.token} | base64 -d
  ```
+
+## Debugging API
+
+It also offers control api for debugging.
+
+### Memory Dump API
+
+To query/list the nodes discoverd by kubernetes discovery, you can query the /v1/discovery/kubernetes/dump control API endpoint like so:
+
+```shell
+GET /v1/discovery/kubernetes/dump
+```
+
+Which will yield the following response:
+
+```
+{
+  "endpoints": [
+    {
+      "endpoints": [
+        {
+          "value": "{\"https\":[{\"host\":\"172.18.164.170\",\"port\":6443,\"weight\":50},{\"host\":\"172.18.164.171\",\"port\":6443,\"weight\":50},{\"host\":\"172.18.164.172\",\"port\":6443,\"weight\":50}]}",
+          "name": "default/kubernetes"
+        },
+        {
+          "value": "{\"metrics\":[{\"host\":\"172.18.164.170\",\"port\":2379,\"weight\":50},{\"host\":\"172.18.164.171\",\"port\":2379,\"weight\":50},{\"host\":\"172.18.164.172\",\"port\":2379,\"weight\":50}]}",
+          "name": "kube-system/etcd"
+        },
+        {
+          "value": "{\"http-85\":[{\"host\":\"172.64.89.2\",\"port\":85,\"weight\":50}]}",
+          "name": "test-ws/testing"
+        }
+      ],
+      "id": "first"
+    }
+  ],
+  "config": [
+    {
+      "default_weight": 50,
+      "id": "first",
+      "client": {
+        "token": "xxx"
+      },
+      "service": {
+        "host": "172.18.164.170",
+        "port": "6443",
+        "schema": "https"
+      },
+      "shared_size": "1m"
+    }
+  ]
+}
+```

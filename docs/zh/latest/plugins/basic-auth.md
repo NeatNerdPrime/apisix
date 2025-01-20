@@ -1,7 +1,8 @@
 ---
 title: basic-auth
 keywords:
-  - APISIX
+  - Apache APISIX
+  - API 网关
   - Plugin
   - Basic Auth
   - basic-auth
@@ -40,9 +41,9 @@ Consumer 端：
 | 名称     | 类型   | 必选项 | 描述                                                                                           |
 | -------- | ------ | -----| ----------------------------------------------------------------------------------------------- |
 | username | string | 是   | Consumer 的用户名并且该用户名是唯一，如果多个 Consumer 使用了相同的 `username`，将会出现请求匹配异常。|
-| password | string | 是   | 用户的密码。                                                                                      |
+| password | string | 是   | 用户的密码。该字段支持使用 [APISIX Secret](../terminology/secret.md) 资源，将值保存在 Secret Manager 中。        |
 
-注意：`password` 的 schema 中还定义了 `encrypted = true`，这意味着该字段将会被加密存储在 etcd 中。具体参考 [加密存储字段](../plugin-develop.md#加密存储字段)。
+注意：schema 中还定义了 `encrypt_fields = {"password"}`，这意味着该字段将会被加密存储在 etcd 中。具体参考 [加密存储字段](../plugin-develop.md#加密存储字段)。
 
 Route 端：
 
@@ -54,9 +55,19 @@ Route 端：
 
 如果需要启用插件，就必须创建一个具有身份验证配置的 Consumer：
 
+:::note
+
+您可以这样从 `config.yaml` 中获取 `admin_key` 并存入环境变量：
+
+```bash
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+```
+
+:::
+
 ```shell
 curl http://127.0.0.1:9180/apisix/admin/consumers \
--H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+-H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "username": "foo",
     "plugins": {
@@ -80,7 +91,7 @@ curl http://127.0.0.1:9180/apisix/admin/consumers \
 
 ```shell
 curl http://127.0.0.1:9180/apisix/admin/routes/1 \
--H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+-H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "methods": ["GET"],
     "uri": "/hello",
@@ -128,13 +139,13 @@ HTTP/1.1 401 Unauthorized
 {"message":"Invalid user authorization"}
 ```
 
-## 禁用插件
+## 删除插件
 
 当你需要禁用 `basic-auth` 插件时，可以通过以下命令删除相应的 JSON 配置，APISIX 将会自动重新加载相关配置，无需重启服务：
 
 ```shell
 curl http://127.0.0.1:9180/apisix/admin/routes/1 \
--H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+-H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "methods": ["GET"],
     "uri": "/hello",

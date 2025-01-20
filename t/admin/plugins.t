@@ -74,6 +74,8 @@ referer-restriction
 csrf
 uri-blocker
 request-validation
+chaitin-waf
+multi-auth
 openid-connect
 cas-auth
 authz-casbin
@@ -83,30 +85,41 @@ ldap-auth
 hmac-auth
 basic-auth
 jwt-auth
+jwe-decrypt
 key-auth
 consumer-restriction
+attach-consumer-label
 forward-auth
 opa
 authz-keycloak
-proxy-mirror
 proxy-cache
+body-transformer
+ai-prompt-template
+ai-prompt-decorator
+ai-rag
+ai-content-moderation
+proxy-mirror
 proxy-rewrite
 workflow
 api-breaker
 limit-conn
 limit-count
 limit-req
+ai-proxy
 gzip
 server-info
 traffic-split
 redirect
 response-rewrite
+degraphql
 kafka-proxy
 grpc-transcode
 grpc-web
+http-dubbo
 public-api
 prometheus
 datadog
+loki-logger
 elasticsearch-logger
 echo
 loggly
@@ -123,6 +136,7 @@ udp-logger
 file-logger
 clickhouse-logger
 tencent-cloud-cls
+inspect
 example-plugin
 aws-lambda
 azure-functions
@@ -134,12 +148,12 @@ ext-plugin-post-resp
 
 
 
-=== TEST 2: wrong path
+=== TEST 2: invalid plugin
 --- request
-GET /apisix/admin/plugins
---- error_code: 400
+GET /apisix/admin/plugins/asdf
+--- error_code: 404
 --- response_body
-{"error_msg":"not found plugin name"}
+{"error_msg":"plugin not found in subsystem http"}
 
 
 
@@ -306,7 +320,7 @@ qr/\{"metadata_schema":\{"properties":\{"ikey":\{"minimum":0,"type":"number"\},"
         }
     }
 --- response_body eval
-qr/\[\{"name":"wolf-rbac","priority":2555\},\{"name":"ldap-auth","priority":2540\},\{"name":"hmac-auth","priority":2530\},\{"name":"basic-auth","priority":2520\},\{"name":"jwt-auth","priority":2510\},\{"name":"key-auth","priority":2500\}\]/
+qr/\[\{"name":"multi-auth","priority":2600\},\{"name":"wolf-rbac","priority":2555\},\{"name":"ldap-auth","priority":2540\},\{"name":"hmac-auth","priority":2530\},\{"name":"basic-auth","priority":2520\},\{"name":"jwt-auth","priority":2510\},\{"name":"jwe-decrypt","priority":2509\},\{"name":"key-auth","priority":2500\}\]/
 
 
 
@@ -338,7 +352,7 @@ qr/\[\{"name":"wolf-rbac","priority":2555\},\{"name":"ldap-auth","priority":2540
         }
     }
 --- response_body eval
-qr/\{"properties":\{"password":\{"encrypted":true,"type":"string"\},"username":\{"type":"string"\}\},"required":\["username","password"\],"title":"work with consumer object","type":"object"\}/
+qr/\{"encrypt_fields":\["password"\],"properties":\{"password":\{"type":"string"\},"username":\{"type":"string"\}\},"required":\["username","password"\],"title":"work with consumer object","type":"object"\}/
 
 
 
@@ -408,3 +422,54 @@ plugins:
     }
 --- response_body
 {"batch-requests":"global","error-log-logger":"global","node-status":"global","server-info":"global"}
+
+
+
+=== TEST 13: check with wrong plugin subsystem
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+
+            local _, message, _ = t('/apisix/admin/plugins?subsystem=asdf',
+                ngx.HTTP_GET
+            )
+            ngx.say(message)
+        }
+    }
+--- response_body eval
+qr/\{"error_msg":"unsupported subsystem: asdf"\}/
+
+
+
+=== TEST 14: check with right plugin in wrong subsystem
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+
+            local _, message, _ = t('/apisix/admin/plugins/http-logger?subsystem=stream',
+                ngx.HTTP_GET
+            )
+            ngx.say(message)
+        }
+    }
+--- response_body eval
+qr/\{"error_msg":"plugin not found in subsystem stream"\}/
+
+
+
+=== TEST 15: check with right plugin in right subsystem
+--- config
+    location /t {
+        content_by_lua_block {
+            local t = require("lib.test_admin").test
+
+            local _, _ , message = t('/apisix/admin/plugins/http-logger?subsystem=http',
+                ngx.HTTP_GET
+            )
+            ngx.say(message)
+        }
+    }
+--- response_body eval
+qr/this is a mark for our injected plugin schema/

@@ -26,7 +26,6 @@ local byte      = string.byte
 local type      = type
 local pcall     = pcall
 local pairs     = pairs
-local ipairs    = ipairs
 
 local _M = {}
 
@@ -50,34 +49,6 @@ local function check_secret(conf)
 end
 
 
-local secret_kv_lrucache = core.lrucache.new({
-    ttl = 300, count = 512
-})
-
-local function create_secret_kvs(values)
-    local secret_managers = {}
-
-    for _, v in ipairs(values) do
-        local path = v.value.id
-        local idx = find(path, "/")
-        if not idx then
-            core.log.error("no secret id")
-            return nil
-        end
-
-        local manager = sub(path, 1, idx - 1)
-        local id = sub(path, idx + 1)
-
-        if not secret_managers[manager] then
-            secret_managers[manager] = {}
-        end
-        secret_managers[manager][id] = v.value
-    end
-
-    return secret_managers
-end
-
-
  local function secret_kv(manager, confid)
     local secret_values
     secret_values = core.config.fetch_created_obj("/secrets")
@@ -85,9 +56,12 @@ end
        return nil
     end
 
-    local secret_managers = secret_kv_lrucache("secret_kv", secret_values.conf_version,
-                create_secret_kvs, secret_values.values)
-    return secret_managers[manager] and secret_managers[manager][confid]
+    local secret = secret_values:get(manager .. "/" .. confid)
+    if not secret then
+        return nil
+    end
+
+    return secret.value
 end
 
 
@@ -110,14 +84,27 @@ function _M.init_worker()
 end
 
 
-local function parse_secret_uri(secret_uri)
+local function check_secret_uri(secret_uri)
     -- Avoid the error caused by has_prefix to cause a crash.
     if type(secret_uri) ~= "string" then
-        return nil, "error secret_uri type: " .. type(secret_uri)
+        return false, "error secret_uri type: " .. type(secret_uri)
     end
 
-    if not string.has_prefix(secret_uri, PREFIX) then
-        return nil, "error secret_uri prefix: " .. secret_uri
+    if not string.has_prefix(secret_uri, PREFIX) and
+        not string.has_prefix(upper(secret_uri), core.env.PREFIX) then
+        return false, "error secret_uri prefix: " .. secret_uri
+    end
+
+    return true
+end
+
+_M.check_secret_uri = check_secret_uri
+
+
+local function parse_secret_uri(secret_uri)
+    local is_secret_uri, err = check_secret_uri(secret_uri)
+    if not is_secret_uri then
+        return is_secret_uri, err
     end
 
     local path = sub(secret_uri, #PREFIX + 1)
@@ -148,6 +135,7 @@ end
 
 
 local function fetch_by_uri(secret_uri)
+    core.log.info("fetching data from secret uri: ", secret_uri)
     local opts, err = parse_secret_uri(secret_uri)
     if not opts then
         return nil, err

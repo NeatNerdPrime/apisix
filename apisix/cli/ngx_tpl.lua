@@ -51,6 +51,9 @@ worker_shutdown_timeout {* worker_shutdown_timeout *};
 env APISIX_PROFILE;
 env PATH; # for searching external plugin runner's binary
 
+# reserved environment variables for configuration
+env APISIX_DEPLOYMENT_ETCD_HOST;
+
 {% if envs then %}
 {% for _, name in ipairs(envs) do %}
 env {*name*};
@@ -112,16 +115,12 @@ http {
         }
     }
     {% end %}
-
-    {% if conf_server then %}
-    {* conf_server *}
-    {% end %}
 }
 {% end %}
 
 {% end %}
 
-{% if stream_proxy then %}
+{% if enable_stream then %}
 stream {
     lua_package_path  "{*extra_lua_path*}$prefix/deps/share/lua/5.1/?.lua;$prefix/deps/share/lua/5.1/?/init.lua;]=]
                       .. [=[{*apisix_lua_home*}/?.lua;{*apisix_lua_home*}/?/init.lua;;{*lua_path*};";
@@ -139,9 +138,21 @@ stream {
 
     lua_shared_dict lrucache-lock-stream {* stream.lua_shared_dict["lrucache-lock-stream"] *};
     lua_shared_dict etcd-cluster-health-check-stream {* stream.lua_shared_dict["etcd-cluster-health-check-stream"] *};
+    lua_shared_dict worker-events-stream {* stream.lua_shared_dict["worker-events-stream"] *};
+
+    {% if enabled_discoveries["tars"] then %}
+    lua_shared_dict tars-stream {* stream.lua_shared_dict["tars-stream"] *};
+    {% end %}
 
     {% if enabled_stream_plugins["limit-conn"] then %}
     lua_shared_dict plugin-limit-conn-stream {* stream.lua_shared_dict["plugin-limit-conn-stream"] *};
+    {% end %}
+
+    # for discovery shared dict
+    {% if discovery_shared_dicts then %}
+    {% for key, size in pairs(discovery_shared_dicts) do %}
+    lua_shared_dict {*key*}-stream {*size*};
+    {% end %}
     {% end %}
 
     resolver {% for _, dns_addr in ipairs(dns_resolver or {}) do %} {*dns_addr*} {% end %} {% if dns_resolver_valid then %} valid={*dns_resolver_valid*}{% end %} ipv6={% if enable_ipv6 then %}on{% else %}off{% end %};
@@ -187,6 +198,17 @@ stream {
     init_worker_by_lua_block {
         apisix.stream_init_worker()
     }
+
+    {% if (events.module or "") == "lua-resty-events" then %}
+    # the server block for lua-resty-events
+    server {
+        listen unix:{*apisix_lua_home*}/logs/stream_worker_events.sock;
+        access_log off;
+        content_by_lua_block {
+            require("resty.events.compat").run()
+        }
+    }
+    {% end %}
 
     server {
         {% for _, item in ipairs(stream_proxy.tcp or {}) do %}
@@ -267,15 +289,18 @@ http {
 
     {% if enabled_plugins["limit-conn"] then %}
     lua_shared_dict plugin-limit-conn {* http.lua_shared_dict["plugin-limit-conn"] *};
+    lua_shared_dict plugin-limit-conn-redis-cluster-slot-lock {* http.lua_shared_dict["plugin-limit-conn-redis-cluster-slot-lock"] *};
     {% end %}
 
     {% if enabled_plugins["limit-req"] then %}
+    lua_shared_dict plugin-limit-req-redis-cluster-slot-lock {* http.lua_shared_dict["plugin-limit-req-redis-cluster-slot-lock"] *};
     lua_shared_dict plugin-limit-req {* http.lua_shared_dict["plugin-limit-req"] *};
     {% end %}
 
     {% if enabled_plugins["limit-count"] then %}
     lua_shared_dict plugin-limit-count {* http.lua_shared_dict["plugin-limit-count"] *};
     lua_shared_dict plugin-limit-count-redis-cluster-slot-lock {* http.lua_shared_dict["plugin-limit-count-redis-cluster-slot-lock"] *};
+    lua_shared_dict plugin-limit-count-reset-header {* http.lua_shared_dict["plugin-limit-count"] *};
     {% end %}
 
     {% if enabled_plugins["prometheus"] and not enabled_stream_plugins["prometheus"] then %}
@@ -308,6 +333,10 @@ http {
     {% if enabled_plugins["authz-keycloak"] then %}
     # for authz-keycloak
     lua_shared_dict access-tokens {* http.lua_shared_dict["access-tokens"] *}; # cache for service account access tokens
+    {% end %}
+
+    {% if enabled_plugins["ocsp-stapling"] then %}
+    lua_shared_dict ocsp-stapling {* http.lua_shared_dict["ocsp-stapling"] *}; # cache for ocsp-stapling
     {% end %}
 
     {% if enabled_plugins["ext-plugin-pre-req"] or enabled_plugins["ext-plugin-post-req"] then %}
@@ -353,7 +382,11 @@ http {
     log_format main escape={* http.access_log_format_escape *} '{* http.access_log_format *}';
     uninitialized_variable_warn off;
 
+    {% if http.access_log_buffer then %}
+    access_log {* http.access_log *} main buffer={* http.access_log_buffer *} flush=3;
+    {% else %}
     access_log {* http.access_log *} main buffer=16384 flush=3;
+    {% end %}
     {% end %}
     open_file_cache  max=1000 inactive=60;
     client_max_body_size {* http.client_max_body_size *};
@@ -453,7 +486,7 @@ http {
         }
         apisix.http_init(args)
 
-        -- set apisix_lua_home into constans module
+        -- set apisix_lua_home into constants module
         -- it may be used by plugins to determine the work path of apisix
         local constants = require("apisix.constants")
         constants.apisix_lua_home = "{*apisix_lua_home*}"
@@ -466,6 +499,19 @@ http {
     exit_worker_by_lua_block {
         apisix.http_exit_worker()
     }
+
+    {% if (events.module or "") == "lua-resty-events" then %}
+    # the server block for lua-resty-events
+    server {
+        listen unix:{*apisix_lua_home*}/logs/worker_events.sock;
+        access_log off;
+        location / {
+            content_by_lua_block {
+                require("resty.events.compat").run()
+            }
+        }
+    }
+    {% end %}
 
     {% if enable_control then %}
     server {
@@ -560,10 +606,6 @@ http {
     }
     {% end %}
 
-    {% if conf_server then %}
-    {* conf_server *}
-    {% end %}
-
     {% if deployment_role ~= "control_plane" then %}
 
     {% if enabled_plugins["proxy-cache"] then %}
@@ -586,12 +628,23 @@ http {
     {% end %}
 
     server {
+        {% if enable_http2 then %}
+        http2 on;
+        {% end %}
+        {% if enable_http3_in_server_context then %}
+        http3 on;
+        {% end %}
         {% for _, item in ipairs(node_listen) do %}
-        listen {* item.ip *}:{* item.port *} default_server {% if item.enable_http2 then %} http2 {% end %} {% if enable_reuseport then %} reuseport {% end %};
+        listen {* item.ip *}:{* item.port *} default_server {% if enable_reuseport then %} reuseport {% end %};
         {% end %}
         {% if ssl.enable then %}
         {% for _, item in ipairs(ssl.listen) do %}
-        listen {* item.ip *}:{* item.port *} ssl default_server {% if item.enable_http2 then %} http2 {% end %} {% if enable_reuseport then %} reuseport {% end %};
+        {% if item.enable_http3 then %}
+        listen {* item.ip *}:{* item.port *} quic default_server {% if enable_reuseport then %} reuseport {% end %};
+        listen {* item.ip *}:{* item.port *} ssl default_server;
+        {% else %}
+        listen {* item.ip *}:{* item.port *} ssl default_server {% if enable_reuseport then %} reuseport {% end %};
+        {% end %}
         {% end %}
         {% end %}
         {% if proxy_protocol and proxy_protocol.listen_http_port then %}
@@ -623,6 +676,22 @@ http {
         proxy_ssl_trusted_certificate {* ssl.ssl_trusted_certificate *};
         {% end %}
 
+        # opentelemetry_set_ngx_var starts
+        {% if opentelemetry_set_ngx_var then %}
+        set $opentelemetry_context_traceparent          '';
+        set $opentelemetry_trace_id                     '';
+        set $opentelemetry_span_id                      '';
+        {% end %}
+        # opentelemetry_set_ngx_var ends
+
+        # zipkin_set_ngx_var starts
+        {% if zipkin_set_ngx_var then %}
+        set $zipkin_context_traceparent          '';
+        set $zipkin_trace_id                     '';
+        set $zipkin_span_id                      '';
+        {% end %}
+        # zipkin_set_ngx_var ends
+
         # http server configuration snippet starts
         {% if http_server_configuration_snippet then %}
         {* http_server_configuration_snippet *}
@@ -637,6 +706,10 @@ http {
         }
 
         {% if ssl.enable then %}
+        ssl_client_hello_by_lua_block {
+            apisix.http_ssl_client_hello_phase()
+        }
+
         ssl_certificate_by_lua_block {
             apisix.http_ssl_phase()
         }
@@ -648,6 +721,7 @@ http {
         {% end %}
 
         location / {
+            set $upstream_mirror_host        '';
             set $upstream_mirror_uri         '';
             set $upstream_upgrade            '';
             set $upstream_connection         '';
@@ -687,16 +761,11 @@ http {
 
             ### the following x-forwarded-* headers is to send to upstream server
 
-            set $var_x_forwarded_for        $remote_addr;
             set $var_x_forwarded_proto      $scheme;
             set $var_x_forwarded_host       $host;
             set $var_x_forwarded_port       $server_port;
 
-            if ($http_x_forwarded_for != "") {
-                set $var_x_forwarded_for "${http_x_forwarded_for}, ${realip_remote_addr}";
-            }
-
-            proxy_set_header   X-Forwarded-For      $var_x_forwarded_for;
+            proxy_set_header   X-Forwarded-For      $proxy_add_x_forwarded_for;
             proxy_set_header   X-Forwarded-Proto    $var_x_forwarded_proto;
             proxy_set_header   X-Forwarded-Host     $var_x_forwarded_host;
             proxy_set_header   X-Forwarded-Port     $var_x_forwarded_port;
@@ -748,15 +817,20 @@ http {
 
             {% if use_apisix_base then %}
             # For servers which obey the standard, when `:authority` is missing,
-            # `host` will be used instead. When used with apisix-base, we can do
+            # `host` will be used instead. When used with apisix-runtime, we can do
             # better by setting `:authority` directly
             grpc_set_header   ":authority" $upstream_host;
             {% else %}
             grpc_set_header   "Host" $upstream_host;
             {% end %}
             grpc_set_header   Content-Type application/grpc;
+            grpc_set_header   TE trailers;
             grpc_socket_keepalive on;
             grpc_pass         $upstream_scheme://apisix_backend;
+
+            {% if enabled_plugins["proxy-mirror"] then %}
+            mirror           /proxy_mirror_grpc;
+            {% end %}
 
             header_filter_by_lua_block {
                 apisix.http_header_filter_phase()
@@ -820,6 +894,32 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Host $upstream_host;
             proxy_pass $upstream_mirror_uri;
+        }
+        {% end %}
+
+        {% if enabled_plugins["proxy-mirror"] then %}
+        location = /proxy_mirror_grpc {
+            internal;
+
+            {% if not use_apisix_base then %}
+            if ($upstream_mirror_uri = "") {
+                return 200;
+            }
+            {% end %}
+
+
+            {% if proxy_mirror_timeouts then %}
+                {% if proxy_mirror_timeouts.connect then %}
+            grpc_connect_timeout {* proxy_mirror_timeouts.connect *};
+                {% end %}
+                {% if proxy_mirror_timeouts.read then %}
+            grpc_read_timeout {* proxy_mirror_timeouts.read *};
+                {% end %}
+                {% if proxy_mirror_timeouts.send then %}
+            grpc_send_timeout {* proxy_mirror_timeouts.send *};
+                {% end %}
+            {% end %}
+            grpc_pass $upstream_mirror_host;
         }
         {% end %}
     }

@@ -17,12 +17,11 @@
 local core = require("apisix.core")
 local log_util = require("apisix.utils.log-util")
 local bp_manager_mod = require("apisix.utils.batch-processor-manager")
-local plugin = require("apisix.plugin")
 
 
 local plugin_name = "sls-logger"
 local ngx = ngx
-local rf5424 = require("apisix.plugins.slslog.rfc5424")
+local rf5424 = require("apisix.utils.rfc5424")
 local tcp = ngx.socket.tcp
 local tostring = tostring
 local ipairs = ipairs
@@ -34,7 +33,23 @@ local schema = {
     type = "object",
     properties = {
         include_req_body = {type = "boolean", default = false},
+        include_req_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
+        include_resp_body = { type = "boolean", default = false },
+        include_resp_body_expr = {
+            type = "array",
+            minItems = 1,
+            items = {
+                type = "array"
+            }
+        },
         timeout = {type = "integer", minimum = 1, default= 5000},
+        log_format = {type = "object"},
         host = {type = "string"},
         port = {type = "integer"},
         project = {type = "string"},
@@ -42,7 +57,17 @@ local schema = {
         access_key_id = {type = "string"},
         access_key_secret = {type ="string"}
     },
+    encrypt_fields = {"access_key_secret"},
     required = {"host", "port", "project", "logstore", "access_key_id", "access_key_secret"}
+}
+
+local metadata_schema = {
+    type = "object",
+    properties = {
+        log_format = {
+            type = "object"
+        }
+    },
 }
 
 local _M = {
@@ -50,10 +75,14 @@ local _M = {
     priority = 406,
     name = plugin_name,
     schema = batch_processor_manager:wrap_schema(schema),
+    metadata_schema = metadata_schema,
 }
 
-function _M.check_schema(conf)
-   return core.schema.check(schema, conf)
+function _M.check_schema(conf,schema_type)
+    if schema_type == core.schema.TYPE_METADATA then
+      return core.schema.check(metadata_schema, conf)
+    end
+    return core.schema.check(schema, conf)
 end
 
 local function send_tcp_data(route_conf, log_message)
@@ -128,29 +157,30 @@ local function handle_log(entries)
     return send_tcp_data(entries[1].route_conf, data)
 end
 
+
+function _M.body_filter(conf, ctx)
+    log_util.collect_body(conf, ctx)
+end
+
+
 -- log phase in APISIX
 function _M.log(conf, ctx)
-    local metadata = plugin.plugin_metadata(plugin_name)
-    local entry
-
-    if metadata and metadata.value.log_format
-       and core.table.nkeys(metadata.value.log_format) > 0
-    then
-        entry = log_util.get_custom_format_log(ctx, metadata.value.log_format)
-    else
-        entry = log_util.get_full_log(ngx, conf)
-    end
-
+    local entry = log_util.get_log_entry(plugin_name, conf, ctx)
     local json_str, err = core.json.encode(entry)
     if not json_str then
         core.log.error('error occurred while encoding the data: ', err)
         return
     end
 
-    local rf5424_data = rf5424.encode("SYSLOG", "INFO", ctx.var.host,"apisix",
-                                      ctx.var.pid, conf.project, conf.logstore,
-                                      conf.access_key_id, conf.access_key_secret, json_str)
-
+    local structured_data = {
+        {name = "project", value = conf.project},
+        {name = "logstore", value = conf.logstore},
+        {name = "access-key-id", value = conf.access_key_id},
+        {name = "access-key-secret", value = conf.access_key_secret},
+    }
+    local rf5424_data = rf5424.encode("SYSLOG", "INFO", ctx.var.host, "apisix",
+                                      ctx.var.pid, json_str, structured_data)
+    core.log.info("collect_data:" .. rf5424_data)
     local process_context = {
         data = rf5424_data,
         route_conf = conf

@@ -117,36 +117,36 @@ local _M = {
 
 Note: The priority of the new plugin cannot be same to any existing ones, you can use the `/v1/schema` method of [control API](./control-api.md#get-v1schema) to view the priority of all plugins. In addition, plugins with higher priority value will be executed first in a given phase (see the definition of `phase` in [choose-phase-to-run](#choose-phase-to-run)). For example, the priority of example-plugin is 0 and the priority of ip-restriction is 3000. Therefore, the ip-restriction plugin will be executed first, then the example-plugin plugin. It's recommended to use priority 1 ~ 99 for your plugin unless you want it to run before some builtin plugins.
 
-In the "__conf/config-default.yaml__" configuration file, the enabled plugins (all specified by plugin name) are listed.
+By default, most APISIX plugins are [enabled](https://github.com/apache/apisix/blob/master/apisix/cli/config.lua):
 
-```yaml
-plugins:                          # plugin list
-  - limit-req
-  - limit-count
-  - limit-conn
-  - key-auth
-  - prometheus
-  - node-status
-  - jwt-auth
-  - zipkin
-  - ip-restriction
-  - grpc-transcode
-  - serverless-pre-function
-  - serverless-post-function
-  - openid-connect
-  - proxy-rewrite
-  - redirect
+```lua title="apisix/cli/config.lua"
+local _M = {
   ...
+  plugins = {
+    "real-ip",
+    "ai",
+    "client-control",
+    "proxy-control",
+    "request-id",
+    "zipkin",
+    "ext-plugin-pre-req",
+    "fault-injection",
+    "mocking",
+    "serverless-pre-function",
+    ...
+  },
+  ...
+}
 ```
 
 Note: the order of the plugins is not related to the order of execution.
 
-To enable your plugin, copy this plugin list into `conf/config.yaml`, and add your plugin name. For instance:
+To enable your custom plugin, add the list of plugins into `conf/config.yaml` and append your plugin name. For instance:
 
 ```yaml
-plugins: # copied from config-default.yaml
-  ...
-  - your-plugin
+plugins:         # see `conf/config.yaml.example` for an example
+  - ...          # add existing plugins
+  - your-plugin  # add your custom plugin
 ```
 
 If your plugin has a new code directory of its own, and you need to redistribute it with the APISIX source code, you will need to modify the `Makefile` to create directory, such as:
@@ -259,7 +259,7 @@ Here is the consumer configuration for key-auth plugin:
 }
 ```
 
-It will be used when you try to create a [Consumer](https://github.com/apache/apisix/blob/master/docs/en/latest/admin-api.md#consumer)
+It will be used when you try to create a [Consumer](./admin-api.md#consumer)
 
 To validate the configuration, the plugin uses a schema like this:
 
@@ -300,13 +300,24 @@ Specify the parameters to be stored encrypted. (Requires APISIX version >= 3.1.0
 Some plugins require parameters to be stored encrypted, such as the `password` parameter of the `basic-auth` plugin. This plugin needs to specify in the `schema` which parameters need to be stored encrypted.
 
 ```lua
-password = { type = "string", encrypted = true },
+encrypt_fields = {"password"}
 ```
 
-Parameters can be stored encrypted by specifying `encrypted = true` in the `schema`. APISIX will provide the following functionality.
+If it is a nested parameter, such as the `clickhouse.password` parameter of the `error-log-logger` plugin, it needs to be separated by `.`:
 
-- When adding and updating resources via the `Admin API`, APISIX automatically encrypts parameters with `encrypted = true` and stores them in etcd
-- When fetching resources via the `Admin API` and when running the plugin, APISIX automatically decrypts the `encrypted = true` parameter
+```lua
+encrypt_fields = {"clickhouse.password"}
+```
+
+Currently not supported yet:
+
+1. more than two levels of nesting
+2. fields in arrays
+
+Parameters can be stored encrypted by specifying `encrypt_fields = {"password"}` in the `schema`. APISIX will provide the following functionality.
+
+- When adding and updating resources via the `Admin API`, APISIX automatically encrypts the parameters declared in `encrypt_fields` and stores them in etcd
+- When fetching resources via the `Admin API` and when running the plugin, APISIX automatically decrypts the parameters declared in `encrypt_fields`
 
 How to enable this feature?
 
@@ -315,13 +326,13 @@ Enable `data_encryption` in `config.yaml`.
 ```yaml
 apisix:
     data_encryption:
-    enable: true
-    keyring:
-        - edd1c9f0985e76a2
-        - qeddd145sfvddff4
+        enable: true
+        keyring:
+            - edd1c9f0985e76a2
+            - qeddd145sfvddff4
 ```
 
-APISIX will try to decrypt the data with keys in the order of the keys in the keyring (only for parameters declared `encrypted = true`). If the decryption fails, the next key will be tried until the decryption succeeds.
+APISIX will try to decrypt the data with keys in the order of the keys in the keyring (only for parameters declared in `encrypt_fields`). If the decryption fails, the next key will be tried until the decryption succeeds.
 
 If none of the keys in `keyring` can decrypt the data, the original data is used.
 
@@ -330,7 +341,7 @@ If none of the keys in `keyring` can decrypt the data, the original data is used
 Determine which phase to run, generally access or rewrite. If you don't know the [OpenResty lifecycle](https://github.com/openresty/lua-nginx-module/blob/master/README.markdown#directives), it's
 recommended to know it in advance. For example key-auth is an authentication plugin, thus the authentication should be completed
 before forwarding the request to any upstream service. Therefore, the plugin must be executed in the rewrite phases.
-In APISIX, only the authentication logic can be run in the rewrite phase. Other logic needs to run before proxy should be in access phase.
+Similarly, if you want to modify or process the response body or headers you can do that in the `body_filter` or in the `header_filter` phases respectively.
 
 The following code snippet shows how to implement any logic relevant to the plugin in the OpenResty log phase.
 
@@ -359,8 +370,17 @@ end
 
 Write the logic of the plugin in the corresponding phase. There are two parameters `conf` and `ctx` in the phase method, take the `limit-conn` plugin configuration as an example.
 
+:::note
+You can fetch the `admin_key` from `config.yaml` and save to an environment variable with the following command:
+
+```bash
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+```
+
+:::
+
 ```shell
-curl http://127.0.0.1:9180/apisix/admin/routes/1 -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1' -X PUT -d '
+curl http://127.0.0.1:9180/apisix/admin/routes/1 -H "X-API-KEY: $admin_key" -X PUT -d '
 {
     "methods": ["GET"],
     "uri": "/index.html",
@@ -419,19 +439,20 @@ end
 
 ## register public API
 
-A plugin can register API which exposes to the public. Take jwt-auth plugin as an example, this plugin registers `GET /apisix/plugin/jwt/sign` to allow client to sign its key:
+A plugin can register API which exposes to the public. Take batch-requests plugin as an example, this plugin registers `POST /apisix/batch-requests` to allow developers to group multiple API requests into a single HTTP request/response cycle:
 
 ```lua
-local function gen_token()
-    --...
+function batch_requests()
+    -- ...
 end
 
 function _M.api()
+    -- ...
     return {
         {
-            methods = {"GET"},
-            uri = "/apisix/plugin/jwt/sign",
-            handler = gen_token,
+            methods = {"POST"},
+            uri = "/apisix/batch-requests",
+            handler = batch_requests,
         }
     }
 end
@@ -540,7 +561,7 @@ are located in the following folder: 't/servroot/logs'.
 
 The above test case represents a simple scenario. Most scenarios will require multiple steps to validate. To do this, create multiple tests `=== TEST 1`, `=== TEST 2`, and so on. These tests will be executed sequentially, allowing you to break down scenarios into a sequence of atomic steps.
 
-Additionally, there are some convenience testing endpoints which can be found [here](https://github.com/apache/apisix/blob/master/t/lib/server.lua#L36). For example, see [proxy-rewrite](https://github.com/apache/apisix/blob/master/t/plugin/proxy-rewrite.lua). In test 42, the upstream `uri` is made to redirect `/test?new_uri=hello` to `/hello` (which always returns `hello world`). In test 43, the response body is confirmed to equal `hello world`, meaning the proxy-rewrite configuration added with test 42 worked correctly.
+Additionally, there are some convenience testing endpoints which can be found [here](https://github.com/apache/apisix/blob/master/t/lib/server.lua#L36). For example, see [proxy-rewrite](https://github.com/apache/apisix/blob/master/t/plugin/proxy-rewrite.t). In test 42, the upstream `uri` is made to redirect `/test?new_uri=hello` to `/hello` (which always returns `hello world`). In test 43, the response body is confirmed to equal `hello world`, meaning the proxy-rewrite configuration added with test 42 worked correctly.
 
 Refer the following [document](building-apisix.md) to setup the testing framework.
 

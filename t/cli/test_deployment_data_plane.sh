@@ -27,14 +27,14 @@ echo '
 deployment:
     role: data_plane
     role_data_plane:
-        config_provider: control_plane
-        control_plane:
-            host:
-                - https://127.0.0.1:12379
-            prefix: "/apisix"
-            timeout: 30
-            tls:
-                verify: false
+        config_provider: etcd
+    etcd:
+        host:
+            - https://127.0.0.1:12379
+        prefix: "/apisix"
+        timeout: 30
+        tls:
+            verify: false
 ' > conf/config.yaml
 
 make run
@@ -50,7 +50,8 @@ fi
 
 echo "passed: data_plane does not write data to etcd"
 
-code=$(curl -o /dev/null -s -w %{http_code} http://127.0.0.1:9080/apisix/admin/routes -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1')
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+code=$(curl -o /dev/null -s -w %{http_code} http://127.0.0.1:9080/apisix/admin/routes -H "X-API-KEY: $admin_key")
 make stop
 
 if [ ! $code -eq 404 ]; then
@@ -64,12 +65,12 @@ echo '
 deployment:
     role: data_plane
     role_data_plane:
-        config_provider: control_plane
-        control_plane:
-            host:
-                - https://127.0.0.1:12379
-            prefix: "/apisix"
-            timeout: 30
+        config_provider: etcd
+    etcd:
+        host:
+            - https://127.0.0.1:12379
+        prefix: "/apisix"
+        timeout: 30
 ' > conf/config.yaml
 
 out=$(make run 2>&1 || true)

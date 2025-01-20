@@ -45,7 +45,7 @@ location /t {
 
         ngx.status = code
         ngx.say(org_body)
-        ngx.sleep(0.2)
+        ngx.sleep(1)
     }
 }
 --- request
@@ -70,7 +70,7 @@ location /t {
     content_by_lua_block {
         local core = require "apisix.core"
         local config_util   = require("apisix.core.config_util")
-        ngx.sleep(0.5) -- make sure the sync happened when admin starts is already finished
+        ngx.sleep(1) -- make sure the sync happened when admin starts is already finished
 
         local before_reload = true
         local plugins_conf, err
@@ -88,7 +88,7 @@ location /t {
             error("failed to create etcd instance for fetching /plugins : "
                 .. err)
         end
-        ngx.sleep(0.5)
+        ngx.sleep(1)
 
         local data = [[
 deployment:
@@ -418,3 +418,12 @@ location /t {
 GET /t
 --- response_body
 hello world
+
+
+
+=== TEST 9: wrong method to reload plugins
+--- request
+GET /apisix/admin/plugins/reload
+--- error_code: 405
+--- response_body
+{"error_msg":"please use PUT method to reload the plugins, GET method is not allowed."}

@@ -44,7 +44,9 @@ fi
 
 make run
 
-code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} https://127.0.0.1:9180/apisix/admin/routes -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1')
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+echo "admin key is " $admin_key
+code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} https://127.0.0.1:9180/apisix/admin/routes -H "X-API-KEY: $admin_key")
 if [ ! $code -eq 200 ]; then
     echo "failed: failed to enable https for admin"
     exit 1
@@ -73,7 +75,8 @@ fi
 
 make run
 
-code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} http://127.0.0.2:9181/apisix/admin/routes -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1')
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} http://127.0.0.2:9181/apisix/admin/routes -H "X-API-KEY: $admin_key")
 
 if [ ! $code -eq 200 ]; then
     echo "failed: failed to access admin"
@@ -154,6 +157,97 @@ fi
 
 echo "pass: missing admin key and show ERROR message"
 
+# missing admin key, only allow 127.0.0.0/24 to access admin api
+
+echo '
+deployment:
+  admin:
+    admin_key: ~
+    allow_admin:
+      - 127.0.0.0/24
+' > conf/config.yaml
+
+make init > output.log 2>&1 | true
+
+if grep -E "ERROR: missing valid Admin API token." output.log > /dev/null; then
+    echo "failed: should not show 'ERROR: missing valid Admin API token.'"
+    exit 1
+fi
+
+echo '
+deployment:
+  admin:
+    admin_key: ~
+    allow_admin:
+      - 0.0.0.0/0
+      - 127.0.0.0/24
+' > conf/config.yaml
+
+make init > output.log 2>&1 | true
+
+if ! grep -E "ERROR: missing valid Admin API token." output.log > /dev/null; then
+    echo "failed: should show 'ERROR: missing valid Admin API token.'"
+    exit 1
+fi
+
+echo "pass: missing admin key and only allow 127.0.0.0/24 to access admin api"
+
+# allow any IP to access admin api with empty admin_key, when admin_key_required=true
+
+git checkout conf/config.yaml
+
+echo '
+deployment:
+  admin:
+    admin_key_required: true
+    admin_key: ~
+    allow_admin:
+      - 0.0.0.0/0
+' > conf/config.yaml
+
+make init > output.log 2>&1 | true
+
+if ! grep -E "ERROR: missing valid Admin API token." output.log > /dev/null; then
+    echo "failed: should show 'ERROR: missing valid Admin API token.'"
+    exit 1
+fi
+
+echo '
+deployment:
+  admin:
+    admin_key_required: false
+    admin_key: ~
+    allow_admin:
+      - 0.0.0.0/0
+' > conf/config.yaml
+
+make init > output.log 2>&1 | true
+
+if grep -E "ERROR: missing valid Admin API token." output.log > /dev/null; then
+    echo "failed: should not show 'ERROR: missing valid Admin API token.'"
+    exit 1
+fi
+
+if ! grep -E "Warning! Admin key is bypassed" output.log > /dev/null; then
+    echo "failed: should show 'Warning! Admin key is bypassed'"
+    exit 1
+fi
+
+echo '
+deployment:
+  admin:
+    admin_key_required: invalid-value
+' > conf/config.yaml
+
+make init > output.log 2>&1 | true
+
+if grep -E "path[deployment->admin->admin_key_required] expect: boolean, but got: string" output.log > /dev/null; then
+    echo "check admin_key_required value failed: should show 'expect: boolean, but got: string'"
+    exit 1
+fi
+
+echo "pass: allow empty admin_key, when admin_key_required=false"
+
 # admin api, allow any IP but use default key
 
 echo '
@@ -161,21 +255,20 @@ deployment:
   admin:
     allow_admin: ~
     admin_key:
-        -
-        name: "admin"
-        key: edd1c9f034335f136f87ad84b625c8f1
+      - name: "admin"
+        key: ''
         role: admin
 ' > conf/config.yaml
 
 make init > output.log 2>&1 | true
 
-grep -E "WARNING: using fixed Admin API token has security risk." output.log > /dev/null
+grep -E "WARNING: using empty Admin API." output.log > /dev/null
 if [ ! $? -eq 0 ]; then
     echo "failed: need to show `WARNING: using fixed Admin API token has security risk`"
     exit 1
 fi
 
-echo "pass: show WARNING message if the user used default token and allow any IP to access"
+echo "pass: show WARNING message if the user uses empty key"
 
 # admin_listen set
 echo '
@@ -189,7 +282,8 @@ rm logs/error.log
 make init
 make run
 
-code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} http://127.0.0.1:9180/apisix/admin/routes -H 'X-API-KEY: edd1c9f034335f136f87ad84b625c8f1')
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} http://127.0.0.1:9180/apisix/admin/routes -H "X-API-KEY: $admin_key")
 make stop
 
 if [ ! $code -eq 200 ]; then
@@ -232,6 +326,8 @@ apisix:
 rm logs/error.log
 make init
 make run
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+
 
 make init
 
@@ -261,9 +357,10 @@ rm logs/error.log
 make init
 make run
 
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
 # initialize node-status public API routes #1
 code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} -X PUT http://127.0.0.1:9180/apisix/admin/routes/node-status \
-    -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+    -H "X-API-KEY: $admin_key" \
     -d "{
         \"uri\": \"/apisix/status\",
         \"plugins\": {
@@ -288,9 +385,10 @@ fi
 make init
 sleep 1
 
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
 # initialize node-status public API routes #2
 code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} -X PUT http://127.0.0.1:9180/apisix/admin/routes/node-status \
-    -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+    -H "X-API-KEY: $admin_key" \
     -d "{
         \"uri\": \"/apisix/status\",
         \"plugins\": {
@@ -329,6 +427,8 @@ stream_plugins:
 rm logs/error.log
 make init
 make run
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
+
 
 # first time check node status api
 code=$(curl -v -k -i -m 20 -o /dev/null -s -w %{http_code} http://127.0.0.1:9080/apisix/status)
@@ -340,8 +440,8 @@ fi
 sleep 0.5
 
 # check http plugins load list
-if ! grep -E 'new plugins: {"public-api":true,"node-status":true}' logs/error.log; -o \
-   ! grep -E 'new plugins: {"node-status":true,"public-api":true}' logs/error.log; then
+if ! grep logs/error.log -E -e 'new plugins: {"public-api":true,"node-status":true}' \
+   -e 'new plugins: {"node-status":true,"public-api":true}'; then
     echo "failed: first time load http plugins list failed"
     exit 1
 fi
@@ -369,8 +469,8 @@ if [ ! $code -eq 200 ]; then
 fi
 
 # check http plugins load list
-if ! grep -E 'new plugins: {"public-api":true,"node-status":true}' logs/error.log; -o \
-   ! grep -E 'new plugins: {"node-status":true,"public-api":true}' logs/error.log; then
+if ! grep logs/error.log -E -e 'new plugins: {"public-api":true,"node-status":true}' \
+   -e 'new plugins: {"node-status":true,"public-api":true}'; then
     echo "failed: second time load http plugins list failed"
     exit 1
 fi

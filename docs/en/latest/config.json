@@ -1,9 +1,16 @@
 {
-  "version": "3.0.0",
+  "version": "3.11.0",
   "sidebar": [
     {
-      "type": "doc",
-      "id": "getting-started"
+      "type": "category",
+      "label": "Getting Started",
+      "items": [
+        "getting-started/README",
+        "getting-started/configure-routes",
+        "getting-started/load-balancing",
+        "getting-started/key-authentication",
+        "getting-started/rate-limiting"
+      ]
     },
     {
       "type": "doc",
@@ -19,11 +26,20 @@
       "items": [
         "tutorials/expose-api",
         "tutorials/protect-api",
-        "tutorials/observe-your-api",
+        {
+          "type": "category",
+          "label": "Observability",
+          "items": [
+            "tutorials/observe-your-api",
+            "tutorials/health-check",
+            "tutorials/monitor-api-health-check"
+          ]
+        },
         "tutorials/manage-api-consumers",
         "tutorials/cache-api-responses",
-        "tutorials/health-check",
-        "tutorials/client-to-apisix-mtls"
+        "tutorials/add-multiple-api-versions",
+        "tutorials/client-to-apisix-mtls",
+        "tutorials/websocket-authentication"
       ]
     },
     {
@@ -33,9 +49,11 @@
         "terminology/api-gateway",
         "terminology/consumer",
         "terminology/consumer-group",
+        "terminology/credential",
         "terminology/global-rule",
         "terminology/plugin",
         "terminology/plugin-config",
+        "terminology/plugin-metadata",
         "terminology/route",
         "terminology/router",
         "terminology/script",
@@ -56,23 +74,34 @@
             "plugins/redirect",
             "plugins/echo",
             "plugins/gzip",
+            "plugins/brotli",
             "plugins/real-ip",
             "plugins/server-info",
             "plugins/ext-plugin-pre-req",
             "plugins/ext-plugin-post-req",
-            "plugins/ext-plugin-post-resp"
+            "plugins/ext-plugin-post-resp",
+            "plugins/inspect",
+            "plugins/ocsp-stapling",
+            "plugins/ai-content-moderation"
           ]
         },
         {
           "type": "category",
           "label": "Transformation",
           "items": [
+            "plugins/ai-prompt-decorator",
             "plugins/response-rewrite",
             "plugins/proxy-rewrite",
             "plugins/grpc-transcode",
             "plugins/grpc-web",
+            "plugins/ai-prompt-template",
             "plugins/fault-injection",
-            "plugins/mocking"
+            "plugins/mocking",
+            "plugins/degraphql",
+            "plugins/body-transformer",
+            "plugins/ai-proxy",
+            "plugins/attach-consumer-label",
+            "plugins/ai-rag"
           ]
         },
         {
@@ -81,6 +110,7 @@
           "items": [
             "plugins/key-auth",
             "plugins/jwt-auth",
+            "plugins/jwe-decrypt",
             "plugins/basic-auth",
             "plugins/authz-keycloak",
             "plugins/authz-casdoor",
@@ -91,7 +121,8 @@
             "plugins/authz-casbin",
             "plugins/ldap-auth",
             "plugins/opa",
-            "plugins/forward-auth"
+            "plugins/forward-auth",
+            "plugins/multi-auth"
           ]
         },
         {
@@ -106,7 +137,8 @@
             "plugins/consumer-restriction",
             "plugins/csrf",
             "plugins/public-api",
-            "plugins/gm"
+            "plugins/gm",
+            "plugins/chaitin-waf"
           ]
         },
         {
@@ -123,7 +155,8 @@
             "plugins/traffic-split",
             "plugins/request-id",
             "plugins/proxy-control",
-            "plugins/client-control"
+            "plugins/client-control",
+            "plugins/workflow"
           ]
         },
         {
@@ -168,7 +201,8 @@
                 "plugins/file-logger",
                 "plugins/loggly",
                 "plugins/elasticsearch-logger",
-                "plugins/tencent-cloud-cls"
+                "plugins/tencent-cloud-cls",
+                "plugins/loki-logger"
               ]
             }
           ]
@@ -181,7 +215,6 @@
             "plugins/azure-functions",
             "plugins/openwhisk",
             "plugins/aws-lambda",
-            "plugins/workflow",
             "plugins/openfunction"
           ]
         },
@@ -191,7 +224,8 @@
           "items": [
             "plugins/dubbo-proxy",
             "plugins/mqtt-proxy",
-            "plugins/kafka-proxy"
+            "plugins/kafka-proxy",
+            "plugins/http-dubbo"
           ]
         }
       ]
@@ -217,6 +251,10 @@
         {
           "type": "doc",
           "id": "building-apisix"
+        },
+        {
+          "type": "doc",
+          "id": "build-apisix-dev-environment-on-mac"
         },
         {
           "type": "doc",
@@ -252,6 +290,10 @@
           "id": "debug-mode"
         }
       ]
+    },
+    {
+      "type": "doc",
+      "id": "deployment-modes"
     },
     {
       "type": "doc",
@@ -293,15 +335,7 @@
         },
         {
           "type": "doc",
-          "id": "deployment-modes"
-        },
-        {
-          "type": "doc",
           "id": "router-radixtree"
-        },
-        {
-          "type": "doc",
-          "id": "stand-alone"
         },
         {
           "type": "doc",
@@ -350,6 +384,14 @@
         {
           "type": "doc",
           "id": "profile"
+        },
+        {
+          "type": "doc",
+          "id": "ssl-protocol"
+        },
+        {
+          "type": "doc",
+          "id": "http3"
         }
       ]
     },

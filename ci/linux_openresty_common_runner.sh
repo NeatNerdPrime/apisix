@@ -27,18 +27,26 @@ before_install() {
 do_install() {
     export_or_prefix
 
-    ./utils/linux-install-openresty.sh
+    ./ci/linux-install-openresty.sh
 
     ./utils/linux-install-luarocks.sh
 
-    ./utils/linux-install-etcd-client.sh
+    ./ci/linux-install-etcd-client.sh
 
     create_lua_deps
 
     # sudo apt-get install tree -y
     # tree deps
 
+    # The latest version of test-nginx is not compatible with the current set of tests with ---http2
+    # due to this commit: https://github.com/openresty/test-nginx/commit/0ccd106cbe6878318e5a591634af8f1707c411a6
+    # This change pins test-nginx to a commit before this one.
     git clone --depth 1 https://github.com/openresty/test-nginx.git test-nginx
+    cd test-nginx
+    git fetch --depth=1 origin ced30a31bafab6c68873efb17b6d80f39bcd95f5
+    git checkout ced30a31bafab6c68873efb17b6d80f39bcd95f5
+    cd ..
+
     make utils
 
     mkdir -p build-cache
@@ -62,31 +70,25 @@ do_install() {
 
     # install vault cli capabilities
     install_vault_cli
+
+    # install brotli
+    install_brotli
 }
 
 script() {
     export_or_prefix
     openresty -V
 
+    make init
+
     set_coredns
 
-    ./t/grpc_server_example/grpc_server_example \
-        -grpc-address :50051 -grpcs-address :50052 -grpcs-mtls-address :50053 -grpc-http-address :50054 \
-        -crt ./t/certs/apisix.crt -key ./t/certs/apisix.key -ca ./t/certs/mtls_ca.crt \
-        &
+    start_grpc_server_example
 
-    # ensure grpc server example is already started
-    for (( i = 0; i <= 100; i++ )); do
-        if [[ "$i" -eq 100 ]]; then
-            echo "failed to start grpc_server_example in time"
-            exit 1
-        fi
-        nc -zv 127.0.0.1 50051 && break
-        sleep 1
-    done
+    start_sse_server_example
 
     # APISIX_ENABLE_LUACOV=1 PERL5LIB=.:$PERL5LIB prove -Itest-nginx/lib -r t
-    FLUSH_ETCD=1 prove --timer -Itest-nginx/lib -I./ -r $TEST_FILE_SUB_DIR | tee /tmp/test.result
+    FLUSH_ETCD=1 TEST_EVENTS_MODULE=$TEST_EVENTS_MODULE prove --timer -Itest-nginx/lib -I./ -r $TEST_FILE_SUB_DIR | tee /tmp/test.result
     rerun_flaky_tests /tmp/test.result
 }
 

@@ -42,10 +42,9 @@ _EOC_
 
         my $route = <<_EOC_;
 routes:
-    -
-    upstream_id: 1
+  - upstream_id: 1
     uris:
-        - /hello
+      - /hello
 #END
 _EOC_
 
@@ -64,8 +63,7 @@ __DATA__
 === TEST 1: all are down detected by health checker
 --- apisix_yaml
 upstreams:
-    -
-    id: 1
+  - id: 1
     type: least_conn
     nodes:
         - host: 127.0.0.1
@@ -102,8 +100,8 @@ upstreams:
 GET /t
 --- error_log
 connect() failed
-unhealthy TCP increment (2/2) for '(127.0.0.1:1979)
-unhealthy TCP increment (2/2) for '(127.0.0.2:1979)
+unhealthy TCP increment (2/2) for '127.0.0.1(127.0.0.1:1979)
+unhealthy TCP increment (2/2) for '127.0.0.2(127.0.0.2:1979)
 --- grep_error_log eval
 qr/proxy request to \S+/
 --- grep_error_log_out
@@ -177,7 +175,7 @@ passed
 GET /t
 --- error_log
 connect() failed
-unhealthy TCP increment (2/2) for '(127.0.0.1:1979)
+unhealthy TCP increment (2/2) for '127.0.0.1(127.0.0.1:1979)
 --- grep_error_log eval
 qr/proxy request to \S+/
 --- grep_error_log_out

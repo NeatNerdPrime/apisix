@@ -421,21 +421,72 @@ POST
 
 
 
-=== TEST 14: get header
+=== TEST 14: add header
 --- config
     location /t {
         content_by_lua_block {
             local core = require("apisix.core")
-            ngx.say(core.request.header(ngx.ctx, "X-101"))
+            ngx.ctx.api_ctx = {}
+            local ctx = ngx.ctx.api_ctx
+            local json = require("toolkit.json")
+            core.request.add_header(ctx, "test_header", "test")
+            local h = core.request.header(ctx, "test_header")
+            ngx.say(h)
+            core.request.add_header(ctx, "test_header", "t2")
+            local h2 = core.request.headers(ctx)["test_header"]
+            ngx.say(json.encode(h2))
+            core.request.add_header(ctx, "test_header", "t3")
+            local h3 = core.request.headers(ctx)["test_header"]
+            ngx.say(json.encode(h3))
         }
     }
---- more_headers eval
-my $i = 1;
-my $s;
-while ($i <= 101) {
-    $s .= "X-$i:$i\n";
-    $i++;
-}
-$s
 --- response_body
-101
+test
+["test","t2"]
+["test","t2","t3"]
+
+
+
+=== TEST 15: call add_header with deprecated way
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+            ngx.ctx.api_ctx = {}
+            local ctx = ngx.ctx.api_ctx
+            core.request.add_header("test_header", "test")
+            local h = core.request.header(ctx, "test_header")
+            ngx.say(h)
+        }
+    }
+--- response_body
+test
+--- error_log
+DEPRECATED: use add_header(ctx, header_name, header_value) instead
+
+
+
+=== TEST 16: after setting the header, ctx.var can still access the correct value
+--- config
+    location /t {
+        content_by_lua_block {
+            local core = require("apisix.core")
+            ngx.ctx.api_ctx = {}
+            local ctx = ngx.ctx.api_ctx
+            core.ctx.set_vars_meta(ctx)
+
+            ctx.var.http_server = "ngx"
+            ngx.say(ctx.var.http_server)
+
+            core.request.set_header(ctx, "server",  "test")
+            ngx.say(ctx.var.http_server)
+
+            -- case-insensitive
+            core.request.set_header(ctx, "Server",  "apisix")
+            ngx.say(ctx.var.http_server)
+        }
+    }
+--- response_body
+ngx
+test
+apisix

@@ -23,6 +23,8 @@ local schema = {
     type = "object",
     properties = {
         uri = {type = "string"},
+        allow_degradation = {type = "boolean", default = false},
+        status_on_error = {type = "integer", minimum = 200, maximum = 599, default = 403},
         ssl_verify = {
             type = "boolean",
             default = true,
@@ -76,6 +78,10 @@ local _M = {
 
 
 function _M.check_schema(conf)
+    local check = {"uri"}
+    core.utils.check_https(check, conf, _M.name)
+    core.utils.check_tls_bool({"ssl_verify"}, conf, _M.name)
+
     return core.schema.check(schema, conf)
 end
 
@@ -88,6 +94,13 @@ function _M.access(conf, ctx)
         ["X-Forwarded-Uri"] = ctx.var.request_uri,
         ["X-Forwarded-For"] = core.request.get_remote_client_ip(ctx),
     }
+
+    if conf.request_method == "POST" then
+        auth_headers["Content-Length"] = core.request.header(ctx, "content-length")
+        auth_headers["Expect"] = core.request.header(ctx, "expect")
+        auth_headers["Transfer-Encoding"] = core.request.header(ctx, "transfer-encoding")
+        auth_headers["Content-Encoding"] = core.request.header(ctx, "content-encoding")
+    end
 
     -- append headers that need to be get from the client request header
     if #conf.request_headers > 0 then
@@ -105,8 +118,17 @@ function _M.access(conf, ctx)
         method = conf.request_method
     }
 
+    local httpc = http.new()
+    httpc:set_timeout(conf.timeout)
     if params.method == "POST" then
-        params.body = core.request.get_body()
+        local client_body_reader, err = httpc:get_client_body_reader()
+        if client_body_reader then
+            params.body = client_body_reader
+        else
+            core.log.warn("failed to get client_body_reader. err: ", err,
+            " using core.request.get_body() instead")
+            params.body = core.request.get_body()
+        end
     end
 
     if conf.keepalive then
@@ -114,15 +136,12 @@ function _M.access(conf, ctx)
         params.keepalive_pool = conf.keepalive_pool
     end
 
-    local httpc = http.new()
-    httpc:set_timeout(conf.timeout)
-
     local res, err = httpc:request_uri(conf.uri, params)
-
-    -- block by default when authorization service is unavailable
-    if not res then
-        core.log.error("failed to process forward auth, err: ", err)
-        return 403
+    if not res and conf.allow_degradation then
+        return
+    elseif not res then
+        core.log.warn("failed to process forward auth, err: ", err)
+        return conf.status_on_error
     end
 
     if res.status >= 300 then

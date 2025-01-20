@@ -44,7 +44,7 @@ __DATA__
                 resource = {
                     type = "global"
                 },
-                scopes = {
+                scope = {
                     "https://www.googleapis.com/auth/logging.admin"
                 },
                 log_id = "syslog",
@@ -74,6 +74,7 @@ passed
             local plugin = require("apisix.plugins.google-cloud-logging")
             local ok, err = plugin.check_schema({
                 auth_config = {
+                    client_email = "email@apisix.iam.gserviceaccount.com",
                     private_key = "private_key",
                     project_id = "apisix",
                     token_uri = "http://127.0.0.1:1980/token",
@@ -81,7 +82,7 @@ passed
                 resource = {
                     type = "global"
                 },
-                scopes = {
+                scope = {
                     "https://www.googleapis.com/auth/logging.admin"
                 },
                 log_id = "syslog",
@@ -132,6 +133,7 @@ passed
             local plugin = require("apisix.plugins.google-cloud-logging")
             local ok, err = plugin.check_schema({
                 auth_config = {
+                    client_email = "email@apisix.iam.gserviceaccount.com",
                     private_key = "private_key",
                     project_id = "apisix",
                     token_uri = "http://127.0.0.1:1980/token",
@@ -190,6 +192,7 @@ value should match only one schema, but matches none
                 plugins = {
                     ["google-cloud-logging"] = {
                         auth_config = {
+                            client_email = "email@apisix.iam.gserviceaccount.com",
                             private_key = [[
 -----BEGIN RSA PRIVATE KEY-----
 MIIBOwIBAAJBAKeXgPvU/dAfVhOPk5BTBXCaOXy/0S3mY9VHyqvWZBJ97g6tGbLZ
@@ -202,7 +205,7 @@ tBXLQH7fw5H8RaxBN91yQUZombw6JnRBXKKohWHZ3Q==
 -----END RSA PRIVATE KEY-----]],
                             project_id = "apisix",
                             token_uri = "http://127.0.0.1:1980/google/logging/token",
-                            scopes = {
+                            scope = {
                                 "https://apisix.apache.org/logs:admin"
                             },
                             entries_uri = "http://127.0.0.1:1980/google/logging/entries",
@@ -260,6 +263,7 @@ Batch Processor[google-cloud-logging] exceeded the max_retry_count
                 plugins = {
                     ["google-cloud-logging"] = {
                         auth_config = {
+                            client_email = "email@apisix.iam.gserviceaccount.com",
                             private_key = [[
 -----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDDzrFwnA3EvYyR
@@ -346,6 +350,7 @@ Batch Processor[google-cloud-logging] exceeded the max_retry_count
                 plugins = {
                     ["google-cloud-logging"] = {
                         auth_config = {
+                            client_email = "email@apisix.iam.gserviceaccount.com",
                             private_key = [[
 -----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDDzrFwnA3EvYyR
@@ -377,7 +382,7 @@ kEJQcmfVew5mFXyxuEn3zA==
 -----END PRIVATE KEY-----]],
                             project_id = "apisix",
                             token_uri = "http://127.0.0.1:1980/google/logging/token",
-                            scopes = {
+                            scope = {
                                 "https://apisix.apache.org/logs:admin"
                             },
                             entries_uri = "http://127.0.0.1:1980/google/logging/entries",
@@ -428,6 +433,7 @@ hello world
                 plugins = {
                     ["google-cloud-logging"] = {
                         auth_config = {
+                            client_email = "email@apisix.iam.gserviceaccount.com",
                             private_key = [[
 -----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDDzrFwnA3EvYyR
@@ -459,7 +465,7 @@ kEJQcmfVew5mFXyxuEn3zA==
 -----END PRIVATE KEY-----]],
                             project_id = "apisix",
                             token_uri = "http://127.0.0.1:1980/google/logging/token?token_type=Basic",
-                            scopes = {
+                            scope = {
                                 "https://apisix.apache.org/logs:admin"
                             },
                             entries_uri = "http://127.0.0.1:1980/google/logging/entries?token_type=Basic",
@@ -510,6 +516,7 @@ hello world
                 plugins = {
                     ["google-cloud-logging"] = {
                         auth_config = {
+                            client_email = "email@apisix.iam.gserviceaccount.com",
                             private_key = [[
 -----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDDzrFwnA3EvYyR
@@ -541,7 +548,7 @@ kEJQcmfVew5mFXyxuEn3zA==
 -----END PRIVATE KEY-----]],
                             project_id = "apisix",
                             token_uri = "http://127.0.0.1:1980/google/logging/token?token_type=Basic",
-                            scopes = {
+                            scope = {
                                 "https://apisix.apache.org/logs:admin"
                             },
                             entries_uri = "http://127.0.0.1:1980/google/logging/entries",

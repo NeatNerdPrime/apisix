@@ -41,6 +41,7 @@ fi
 
 echo '
 apisix:
+  proxy_mode: http&stream
   stream_proxy:
     tcp:
       - 9100
@@ -62,6 +63,7 @@ echo "pass: dns_resolver_valid takes effect"
 
 echo '
 apisix:
+  proxy_mode: http&stream
   stream_proxy:
     tcp:
       - 9100
@@ -130,6 +132,7 @@ rm logs/error.log || true
 echo "
 apisix:
     enable_admin: true
+    proxy_mode: http&stream
     stream_proxy:
         tcp:
             - addr: 9100
@@ -141,9 +144,9 @@ nginx_config:
 
 make run
 sleep 0.5
-
+admin_key=$(yq '.deployment.admin.admin_key[0].key' conf/config.yaml | sed 's/"//g')
 curl -v -k -i -m 20 -o /dev/null -s -X PUT http://127.0.0.1:9180/apisix/admin/stream_routes/1 \
-    -H "X-API-KEY: edd1c9f034335f136f87ad84b625c8f1" \
+    -H "X-API-KEY: $admin_key" \
     -d '{
         "upstream": {
             "type": "roundrobin",

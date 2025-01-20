@@ -14,7 +14,7 @@
 -- See the License for the specific language governing permissions and
 -- limitations under the License.
 --
-local redis_new = require("resty.redis").new
+local redis     = require("apisix.utils.redis")
 local core = require("apisix.core")
 local assert = assert
 local setmetatable = setmetatable
@@ -30,11 +30,13 @@ local mt = {
 
 
 local script = core.string.compress_script([=[
-    if redis.call('ttl', KEYS[1]) < 0 then
-        redis.call('set', KEYS[1], ARGV[1] - 1, 'EX', ARGV[2])
-        return ARGV[1] - 1
+    assert(tonumber(ARGV[3]) >= 1, "cost must be at least 1")
+    local ttl = redis.call('ttl', KEYS[1])
+    if ttl < 0 then
+        redis.call('set', KEYS[1], ARGV[1] - ARGV[3], 'EX', ARGV[2])
+        return {ARGV[1] - ARGV[3], ARGV[2]}
     end
-    return redis.call('incrby', KEYS[1], -1)
+    return {redis.call('incrby', KEYS[1], 0 - ARGV[3]), ttl}
 ]=])
 
 
@@ -50,62 +52,37 @@ function _M.new(plugin_name, limit, window, conf)
     return setmetatable(self, mt)
 end
 
-
-function _M.incoming(self, key)
+function _M.incoming(self, key, cost)
     local conf = self.conf
-    local red = redis_new()
-    local timeout = conf.redis_timeout or 1000    -- 1sec
-    core.log.info("ttl key: ", key, " timeout: ", timeout)
-
-    red:set_timeouts(timeout, timeout, timeout)
-
-    local ok, err = red:connect(conf.redis_host, conf.redis_port or 6379)
-    if not ok then
-        return false, err
-    end
-
-    local count
-    count, err = red:get_reused_times()
-    if 0 == count then
-        if conf.redis_password and conf.redis_password ~= '' then
-            local ok, err = red:auth(conf.redis_password)
-            if not ok then
-                return nil, err
-            end
-        end
-
-        -- select db
-        if conf.redis_database ~= 0 then
-            local ok, err = red:select(conf.redis_database)
-            if not ok then
-                return false, "failed to change redis db, err: " .. err
-            end
-        end
-    elseif err then
-        -- core.log.info(" err: ", err)
-        return nil, err
+    local red, err = redis.new(conf)
+    if not red then
+        return red, err, 0
     end
 
     local limit = self.limit
     local window = self.window
-    local remaining
+    local res
     key = self.plugin_name .. tostring(key)
 
-    remaining, err = red:eval(script, 1, key, limit, window)
+    local ttl = 0
+    res, err = red:eval(script, 1, key, limit, window, cost or 1)
 
     if err then
-        return nil, err
+        return nil, err, ttl
     end
+
+    local remaining = res[1]
+    ttl = res[2]
 
     local ok, err = red:set_keepalive(10000, 100)
     if not ok then
-        return nil, err
+        return nil, err, ttl
     end
 
     if remaining < 0 then
-        return nil, "rejected"
+        return nil, "rejected", ttl
     end
-    return 0, remaining
+    return 0, remaining, ttl
 end
 
 
